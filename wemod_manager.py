@@ -194,6 +194,28 @@ def _find_proton_in_steam(ver: str) -> Optional[str]:
     return None
 
 
+def _find_any_proton_wine() -> Optional[str]:
+    """Varre todos os diretorios Proton (compatibilitytools.d e steamapps/common)
+    e retorna o primeiro wine encontrado, independente da versao."""
+    steam_roots = [
+        os.path.expanduser('~/.local/share/Steam'),
+        os.path.expanduser('~/.steam/steam'),
+        os.path.expanduser('~/.steam/root'),
+    ]
+    for root in steam_roots:
+        for base in ('compatibilitytools.d', 'steamapps/common'):
+            base_dir = os.path.join(root, base)
+            if not os.path.isdir(base_dir):
+                continue
+            for d in sorted(os.listdir(base_dir), reverse=True):
+                if 'proton' not in d.lower():
+                    continue
+                wine = _find_wine_in_dir(os.path.join(base_dir, d))
+                if wine:
+                    return wine
+    return None
+
+
 def _get_wine_binary(wineprefix: str) -> str:
     """Retorna o binario wine real (files/bin/wine) para usar com WINEPREFIX.
     Proton como wrapper nao funciona, precisamos do wine interno."""
@@ -206,23 +228,29 @@ def _get_wine_binary(wineprefix: str) -> str:
             return wine
 
     # PortProton: prefixo dentro ~/.var/app/ru.linux_gaming.PortProton/data/prefixes/
+    # ou ~/PortProton/data/prefixes/ (instalacao nativa)
     pp_base = os.path.expanduser(
         '~/.var/app/ru.linux_gaming.PortProton/data'
     )
-    if pp_base in wineprefix and os.path.isdir(pp_base):
+    pp_native_base = os.path.expanduser('~/PortProton/data')
+    if (pp_base in wineprefix and os.path.isdir(pp_base)) or \
+       (pp_native_base in wineprefix and os.path.isdir(pp_native_base)):
+        # determina qual base usar
+        base = pp_base if os.path.isdir(pp_base) else pp_native_base
+
         # 1. Tenta ler .wine_ver dentro do prefixo (contém "GE-PROTON11-1")
         wine_ver_file = os.path.join(wineprefix, '.wine_ver')
         if os.path.isfile(wine_ver_file):
             ver = Path(wine_ver_file).read_text().strip()
             # Procura em dist/<ver>/files/bin/wine
-            for d in (os.path.join(pp_base, 'dist', ver),
-                      os.path.join(pp_base, ver)):
+            for d in (os.path.join(base, 'dist', ver),
+                      os.path.join(base, ver)):
                 wine = _find_wine_in_dir(d)
                 if wine:
                     return wine
 
         # 2. Fallback: varre diretorios dentro de dist/
-        dist_dir = os.path.join(pp_base, 'dist')
+        dist_dir = os.path.join(base, 'dist')
         if os.path.isdir(dist_dir):
             for item in os.listdir(dist_dir):
                 wine = _find_wine_in_dir(os.path.join(dist_dir, item))
@@ -230,10 +258,25 @@ def _get_wine_binary(wineprefix: str) -> str:
                     return wine
 
         # 3. Fallback: varre a raiz do PortProton
-        for item in os.listdir(pp_base):
-            wine = _find_wine_in_dir(os.path.join(pp_base, item))
+        for item in os.listdir(base):
+            wine = _find_wine_in_dir(os.path.join(base, item))
             if wine:
                 return wine
+
+    # Hydra Launcher: prefixo dentro ~/.config/hydralauncher/wine-prefixes/
+    if _is_hydra_prefix(wineprefix):
+        hydra_wine = _find_hydra_wine(wineprefix)
+        if hydra_wine:
+            _log(f'Wine do Hydra encontrado: {hydra_wine}')
+            return hydra_wine
+        _log('Wine do Hydra nao encontrado, tentando fallback...')
+
+    # fallback: varre todos os Protons disponiveis (versao independente)
+    _log('Proton nao encontrado pelo version file, varrendo todos os Protons...')
+    wine = _find_any_proton_wine()
+    if wine:
+        _log(f'Wine encontrado via fallback: {wine}')
+        return wine
 
     # fallback: wine do sistema
     for c in ('/usr/bin/wine64', '/usr/bin/wine',
@@ -261,6 +304,95 @@ def _run_wine(wine_bin: str, wineprefix: str, args: list,
 
 
 
+def _is_portproton_prefix(wineprefix: str) -> bool:
+    pp_base = os.path.expanduser(
+        '~/.var/app/ru.linux_gaming.PortProton/data'
+    )
+    pp_native_base = os.path.expanduser('~/PortProton/data')
+    return (pp_base in wineprefix and os.path.isdir(pp_base)) or \
+           (pp_native_base in wineprefix and os.path.isdir(pp_native_base))
+
+
+def _is_hydra_prefix(wineprefix: str) -> bool:
+    hydra_base = os.path.expanduser('~/.config/hydralauncher/wine-prefixes')
+    return wineprefix.startswith(hydra_base) and os.path.isdir(hydra_base)
+
+
+def _find_hydra_wine(wineprefix: str) -> Optional[str]:
+    version_file = os.path.join(wineprefix, 'version')
+    if not os.path.isfile(version_file):
+        return None
+    ver = Path(version_file).read_text().strip()
+    proton_cache = os.path.expanduser('~/.cache/protontricks/proton')
+    if not os.path.isdir(proton_cache):
+        return None
+    for d in sorted(os.listdir(proton_cache), reverse=True):
+        if ver.lower() in d.lower():
+            wine = os.path.join(proton_cache, d, 'bin', 'wine')
+            if os.path.isfile(wine):
+                return wine
+    return None
+
+
+def _find_vkd3d_dirs() -> list:
+    """Procura diretorios lib/vkd3d em instalacoes do Proton."""
+    dirs = []
+    candidates = [
+        os.path.expanduser('~/.var/app/ru.linux_gaming.PortProton/data/dist'),
+        os.path.expanduser('~/PortProton/data/dist'),
+        os.path.expanduser('~/.local/share/Steam/compatibilitytools.d'),
+        os.path.expanduser('~/.config/heroic/tools/proton'),
+        os.path.expanduser('~/.local/share/Steam/steamapps/common'),
+    ]
+    seen = set()
+    for base in candidates:
+        if not os.path.isdir(base):
+            continue
+        for entry in os.listdir(base):
+            if not entry.lower().startswith('proton') and 'proton' not in entry.lower():
+                continue
+            for sub in ('files',):
+                d = os.path.join(base, entry, sub, 'lib', 'vkd3d')
+                real = os.path.realpath(d)
+                if os.path.isdir(os.path.join(d, 'x86_64-windows')) and real not in seen:
+                    seen.add(real)
+                    dirs.append(d)
+    return dirs
+
+
+def _ensure_vkd3d_utils(wineprefix: str, log_callback=None) -> None:
+    """Copia libvkd3d-utils-1.dll para o prefixo caso esteja faltando."""
+    if log_callback is None:
+        log_callback = _log
+
+    targets = [
+        ('system32', 'libvkd3d-utils-1.dll'),
+        ('syswow64', 'libvkd3d-utils-1.dll'),
+    ]
+    if all(os.path.isfile(os.path.join(wineprefix, 'drive_c', 'windows', *t)) for t in targets):
+        log_callback('libvkd3d-utils-1.dll ja presente')
+        return
+
+    vkd3d_dirs = _find_vkd3d_dirs()
+    if not vkd3d_dirs:
+        log_callback('ATENCAO: libvkd3d-utils-1.dll nao encontrada em nenhum Proton')
+        log_callback('WeMod pode nao iniciar corretamente')
+        return
+
+    src_dir = vkd3d_dirs[0]
+    log_callback(f'Copiando libvkd3d-utils-1.dll de {src_dir}...')
+
+    for arch, win_arch in [('x86_64-windows', 'system32'), ('i386-windows', 'syswow64')]:
+        src = os.path.join(src_dir, arch, 'libvkd3d-utils-1.dll')
+        dst = os.path.join(wineprefix, 'drive_c', 'windows', win_arch, 'libvkd3d-utils-1.dll')
+        if os.path.isfile(src) and not os.path.isfile(dst):
+            try:
+                shutil.copy2(src, dst)
+                log_callback(f'  {win_arch}/libvkd3d-utils-1.dll copiado')
+            except Exception as e:
+                log_callback(f'  ERRO ao copiar {win_arch}: {e}')
+
+
 def install_wemod_prefix(wineprefix: str,
                         log_callback=None) -> bool:
     """Instala WeMod + .NET 4.8 + dependencias no prefixo.
@@ -273,48 +405,54 @@ def install_wemod_prefix(wineprefix: str,
     if os.path.isfile(marker):
         os.remove(marker)
 
+    is_portproton = _is_portproton_prefix(wineprefix)
     log_callback(f'Instalando WeMod em {wineprefix}...')
     wine_bin = _get_wine_binary(wineprefix)
     log_callback(f'Wine: {wine_bin}')
 
-    # 1. winetricks
-    winetricks_sh = os.path.join(WEMOD_DATA_DIR, 'winetricks')
-    if not os.path.isfile(winetricks_sh):
-        log_callback('Baixando winetricks...')
-        resp = _http_get(
-            'https://github.com/Winetricks/winetricks/raw/master/src/winetricks'
+    if is_portproton:
+        log_callback('Prefixo PortProton detectado — pulando winetricks')
+        _ensure_vkd3d_utils(wineprefix, log_callback)
+
+    if not is_portproton:
+        # winetricks apenas para prefixos que nao sao PortProton
+        winetricks_sh = os.path.join(WEMOD_DATA_DIR, 'winetricks')
+        if not os.path.isfile(winetricks_sh):
+            log_callback('Baixando winetricks...')
+            resp = _http_get(
+                'https://github.com/Winetricks/winetricks/raw/master/src/winetricks'
+            )
+            with open(winetricks_sh, 'wb') as f:
+                shutil.copyfileobj(resp, f)
+            os.chmod(winetricks_sh, 0o755)
+
+        wt_env = os.environ.copy()
+        wt_env['WINEPREFIX'] = wineprefix
+        wt_env['WINEDLLOVERRIDES'] = 'winemenubuilder.exe=d'
+        wt_env['PATH'] = os.path.dirname(wine_bin) + ':' + wt_env.get('PATH', '')
+
+        log_callback('winetricks: sdl, cjkfonts, vkd3d, dxvk2030...')
+        subprocess.run(
+            [winetricks_sh, 'sdl', 'cjkfonts', 'vkd3d', 'dxvk2030'],
+            env=wt_env,
+            timeout=600,
         )
-        with open(winetricks_sh, 'wb') as f:
-            shutil.copyfileobj(resp, f)
-        os.chmod(winetricks_sh, 0o755)
 
-    wt_env = os.environ.copy()
-    wt_env['WINEPREFIX'] = wineprefix
-    wt_env['WINEDLLOVERRIDES'] = 'winemenubuilder.exe=d'
-    wt_env['PATH'] = os.path.dirname(wine_bin) + ':' + wt_env.get('PATH', '')
+        log_callback('winetricks: dotnet48 (pode levar 20-40 min)...')
+        subprocess.run(
+            [winetricks_sh, '-f', 'dotnet48'],
+            env=wt_env,
+            timeout=3600,
+        )
 
-    log_callback('winetricks: sdl, cjkfonts, vkd3d, dxvk2030...')
-    subprocess.run(
-        [winetricks_sh, 'sdl', 'cjkfonts', 'vkd3d', 'dxvk2030'],
-        env=wt_env,
-        timeout=600,
-    )
-
-    log_callback('winetricks: dotnet48 (pode levar 20-40 min)...')
-    subprocess.run(
-        [winetricks_sh, '-f', 'dotnet48'],
-        env=wt_env,
-        timeout=3600,
-    )
-
-    # Verifica .NET 4.8
-    fx_path = os.path.join(wineprefix, 'drive_c', 'windows',
-                           'Microsoft.NET', 'Framework64', 'v4.0.30319')
-    if os.path.isdir(fx_path) and os.path.isfile(os.path.join(fx_path, 'clr.dll')):
-        log_callback('.NET 4.8 instalado com sucesso')
-    else:
-        log_callback('ATENCAO: .NET 4.8 pode nao ter instalado corretamente')
-        log_callback('WeMod pode reclamar sobre .NET')
+        # Verifica .NET 4.8
+        fx_path = os.path.join(wineprefix, 'drive_c', 'windows',
+                               'Microsoft.NET', 'Framework64', 'v4.0.30319')
+        if os.path.isdir(fx_path) and os.path.isfile(os.path.join(fx_path, 'clr.dll')):
+            log_callback('.NET 4.8 instalado com sucesso')
+        else:
+            log_callback('ATENCAO: .NET 4.8 pode nao ter instalado corretamente')
+            log_callback('WeMod pode reclamar sobre .NET')
 
     log_callback('winecfg -v win10...')
     _run_wine(wine_bin, wineprefix, ['winecfg', '-v', 'win10'])
@@ -410,12 +548,91 @@ def _get_proton_binary(wineprefix: str) -> Optional[str]:
     return None
 
 
-def launch_wemod(wineprefix: str) -> Optional[int]:
-    """Inicia WeMod como processo background via cmd /c start com wine direto.
+def _fix_wemod_window_position(wineprefix: str):
+    """Ajusta init.json do WeMod para x=0.
 
-    Usa wine puro (sem Proton) para evitar conflito de lock do compatdata
-    com o Steam. O batch faz `start "" WeMod.exe --flags` para spawnar o
-    WeMod desanexado e fica em loop aguardando o processo sair."""
+    No Electron sob Wine/XWayland, o WeMod soma o offset Xinerama do monitor
+    primario ao carregar a posicao. Com x=0 no config, o Electron coloca a
+    janela em 0 + offset (ex.: 1440), que e o inicio do monitor principal."""
+    win_user = _get_windows_user(wineprefix)
+    init_path = os.path.join(
+        wineprefix, f'drive_c/users/{win_user}/AppData/Roaming/WeMod/App/init.json'
+    )
+    if not os.path.isfile(init_path):
+        return
+    try:
+        import json
+        with open(init_path) as f:
+            data = json.load(f)
+        bounds = data.get('windows', {}).get('app', {}).get('bounds', {})
+        if bounds.get('x', 0) == 0:
+            return  # ja corrigido
+        bounds['x'] = 0
+        bounds['y'] = 0
+        with open(init_path, 'w') as f:
+            json.dump(data, f, separators=(',', ':'))
+        _log('init.json: x corrigido para 0')
+    except Exception as e:
+        _log(f'init.json: erro ao corrigir x: {e}')
+
+
+def _get_wemod_window_id(wineprefix: str, timeout: float = 10.0) -> Optional[int]:
+    """Aguarda a janela WeMod aparecer e retorna o X11 window ID."""
+    import time
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            import subprocess
+            out = subprocess.run(
+                ['xdotool', 'search', '--name', 'WeMod'],
+                capture_output=True, text=True, timeout=5,
+            )
+            if out.returncode == 0 and out.stdout.strip():
+                # Pega o ultimo wid (janela principal, nao tooltips)
+                wids = out.stdout.strip().splitlines()
+                # A janela principal costuma ter geometry > 1x1
+                for wid in reversed(wids):
+                    geo = subprocess.run(
+                        ['xdotool', 'getwindowgeometry', wid],
+                        capture_output=True, text=True,
+                    )
+                    if 'Geometry: 1x1' not in geo.stdout:
+                        return int(wid)
+                return int(wids[-1])
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        time.sleep(0.5)
+    return None
+
+
+def _restore_wemod_window(wineprefix: str):
+    """Restaura a janela WeMod se estiver minimizada (Iconic/HIDDEN).
+
+    Electron sob Wine/XWayland frequentemente inicia com WM_STATE=Iconic."""
+    wid = _get_wemod_window_id(wineprefix, timeout=8.0)
+    if wid is None:
+        _log('Janela WeMod nao encontrada para restaurar')
+        return
+    try:
+        import subprocess
+        # Verifica se esta iconic (minimizada)
+        out = subprocess.run(
+            ['xprop', '-id', str(wid), 'WM_STATE'],
+            capture_output=True, text=True, timeout=3,
+        )
+        if 'Iconic' in out.stdout:
+            subprocess.run(['xdotool', 'windowmap', str(wid)], timeout=3)
+            subprocess.run(['xdotool', 'windowactivate', str(wid)], timeout=3)
+            _log(f'Janela WeMod (WID {wid}) restaurada de Iconic')
+        else:
+            _log(f'Janela WeMod (WID {wid}) ja em estado Normal')
+    except Exception as e:
+        _log(f'Erro ao restaurar janela WeMod: {e}')
+
+
+def launch_wemod(wineprefix: str) -> Optional[int]:
+    """Inicia WeMod diretamente com wine.
+    Usa wine puro (sem Proton / batch file) para maior compatibilidade com Wayland."""
     marker = os.path.join(wineprefix, WEMOD_MARKER)
     if not os.path.isfile(marker):
         _log('WeMod nao instalado, instale primeiro')
@@ -432,31 +649,31 @@ def launch_wemod(wineprefix: str) -> Optional[int]:
         return None
     _ensure_version_dll()
 
-    wemod_win = _winpath(wemod_exe)
-    flags = ' '.join([
-        '--disable-gpu',
+    flags = [
         '--no-sandbox',
+        '--disable-gpu',
         '--in-process-gpu',
-        '--disable-gpu-compositing',
         '--use-gl=swiftshader',
-    ])
-    bat_path = '/tmp/wemod_start.bat'
-    with open(bat_path, 'w') as f:
-        f.write(f'@echo off\n')
-        f.write(f'start "" "{wemod_win}" {flags}\n')
-        f.write(f':loop\n')
-        f.write(f'@ping localhost -n 6 >nul\n')
-        f.write(f'tasklist /FI "IMAGENAME eq WeMod.exe" 2>nul | find "WeMod.exe" >nul\n')
-        f.write(f'if errorlevel 1 exit\n')
-        f.write(f'goto loop\n')
+        '--disable-gpu-compositing',
+        '--disable-accelerated-2d-canvas',
+        '--disable-crash-reporter',
+        '--no-zygote',
+        '--force-device-scale-factor=1',
+        '--disable-features=Vulkan,UseSkiaRenderer',
+    ]
+
+    # Ajusta init.json para x=0 (Electron soma offset do monitor primario ao carregar)
+    _fix_wemod_window_position(wineprefix)
 
     logfile = f'/tmp/wemod_{os.path.basename(wineprefix)}.log'
     wine_bin = _get_wine_binary(wineprefix)
     env = os.environ.copy()
     env['WINEPREFIX'] = wineprefix
-    env['WINEDLLOVERRIDES'] = 'winemenubuilder.exe=d'
+    env['WINEDLLOVERRIDES'] = 'winedbg.exe=d;winemenubuilder.exe=d'
     env['PATH'] = os.path.dirname(wine_bin) + ':' + env.get('PATH', '')
-    cmd = [wine_bin, 'cmd', '/c', 'Z:\\tmp\\wemod_start.bat']
+    env['DISABLE_CRASH_HANDLER'] = '1'
+    env['GDK_BACKEND'] = 'x11'
+    cmd = [wine_bin, wemod_exe] + flags
 
     proc = subprocess.Popen(
         cmd, env=env,
@@ -464,7 +681,7 @@ def launch_wemod(wineprefix: str) -> Optional[int]:
         stderr=subprocess.STDOUT,
         start_new_session=True,
     )
-    _log(f'WeMod iniciado via batch (PID {proc.pid}, log: {logfile})')
+    _log(f'WeMod iniciado diretamente (PID {proc.pid}, log: {logfile})')
     import time
     time.sleep(3)
     we_pid = _get_wemod_pid(wineprefix)
@@ -472,6 +689,10 @@ def launch_wemod(wineprefix: str) -> Optional[int]:
         _log(f'WeMod.exe em execucao (PID {we_pid})')
     else:
         _log('ATENCAO: WeMod.exe nao detectado apos lancamento')
+
+    # Restaura a janela se estiver minimizada (bug comum no Wine/XWayland)
+    _restore_wemod_window(wineprefix)
+
     return we_pid or proc.pid
 
 

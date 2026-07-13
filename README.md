@@ -2,6 +2,8 @@
 
 Gerenciador gráfico (PyQt6) para executar **trainers** (aplicativos que modificam o comportamento de jogos em tempo de execução, como vidas infinitas, dinheiro infinito, etc.) no Linux usando prefixes Wine/Proton. Detecta automaticamente jogos Steam e de vários launchers, além de integrar o **WeMod** completamente (download, instalação com .NET 4.8, launch e stop).
 
+![Action Shark](Captura_de_tela_20260709_133047.png)
+
 ## Como funciona
 
 O programa varre o sistema em busca de:
@@ -15,7 +17,7 @@ Com um prefixo selecionado, você pode executar qualquer `.exe` (trainer) dentro
 
 ## Funcionalidades
 
-- **Detecção automática** de jogos e prefixes Steam, Lutris, Bottles, Heroic, PortProton, PlayOnLinux
+- **Detecção automática** de jogos e prefixes Steam, Lutris, Bottles, Heroic, PortProton, PlayOnLinux, Hydra
 - **Execução de trainers** no Wine/Proton correto (detecta o binário wine automaticamente)
 - **Monitor automático**: observe um processo e dispare trainers assim que ele aparecer
 - **WeMod integrado**: download da versão mais recente, instalação (winetricks + .NET 4.8 + DXVK + VKD3D), login compartilhado entre prefixes, start/stop
@@ -32,6 +34,7 @@ Com um prefixo selecionado, você pode executar qualquer `.exe` (trainer) dentro
 | **Heroic Games Launcher** | `~/.config/heroic/config.json` + `GamesConfig/*.json` (Flatpak incluso) |
 | **PortProton** | `~/.var/app/ru.linux_gaming.PortProton/data/prefixes/` ou `~/PortProton/prefixes/` |
 | **PlayOnLinux** | `~/.PlayOnLinux/wineprefix/` |
+| **Hydra** | `~/.config/hydralauncher/wine-prefixes/<appid>/` |
 | **WeMod** | Download + instalação integrada com `.desktop` próprio |
 | **Custom (Não-Steam)** | `~/.wine`, `~/Games/`, `~/wineprefixes/`, ou adicionados manualmente |
 

@@ -9,7 +9,7 @@ DESKTOP_FILE="$HOME/Área de Trabalho/trainer_manager.desktop"
 
 # Fallback para nomes comuns de desktop em português/inglês
 if [ ! -d "$(dirname "$DESKTOP_FILE")" ]; then
-    for d in "$HOME/Desktop" "$HOME/Área de Trabalho" "$HOME/Escritorio"; do
+    for d in "$HOME/Desktop" "$HOME/Área de trabalho" "$HOME/Escritorio"; do
         if [ -d "$d" ]; then
             DESKTOP_FILE="$d/trainer_manager.desktop"
             break

@@ -11,7 +11,7 @@ import threading
 
 from PyQt6.QtWidgets import (
     QApplication,
-    QWidget,
+    QDialog,
     QVBoxLayout,
     QHBoxLayout,
     QListWidget,
@@ -29,6 +29,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QInputDialog,
     QMenu,
+    QWidget,
 )
 from PyQt6.QtCore import Qt, QTimer
 
@@ -315,6 +316,7 @@ def _detect_portproton():
     bases = [
         os.path.expanduser('~/.var/app/ru.linux_gaming.PortProton/data/prefixes/'),
         os.path.expanduser('~/PortProton/prefixes/'),
+        os.path.expanduser('~/PortProton/data/prefixes/'),
     ]
     for base in bases:
         if not os.path.isdir(base):
@@ -353,6 +355,24 @@ def _detect_playonlinux():
     return out
 
 
+def _detect_hydra():
+    out = []
+    base = os.path.expanduser('~/.config/hydralauncher/wine-prefixes')
+    if not os.path.isdir(base):
+        return out
+    for entry in sorted(os.listdir(base)):
+        pfx = os.path.join(base, entry)
+        if not os.path.isdir(os.path.join(pfx, 'drive_c')):
+            continue
+        out.append({
+            'name': f"Hydra: {entry}",
+            'wineprefix': pfx,
+            'source': 'Hydra',
+            'exe': '',
+        })
+    return out
+
+
 def _detect_custom():
     out = []
     default = os.path.expanduser('~/.wine')
@@ -384,6 +404,7 @@ _LAUNCHER_DETECTORS = [
     _detect_heroic,
     _detect_portproton,
     _detect_playonlinux,
+    _detect_hydra,
     _detect_custom,
 ]
 
@@ -595,6 +616,10 @@ class ProtonRunner(QWidget):
         self._refresh_trainer_list()
         QTimer.singleShot(150, self._wemod_refresh)
 
+        self._auto_refresh_timer = QTimer(self)
+        self._auto_refresh_timer.timeout.connect(self._auto_refresh)
+        self._auto_refresh_timer.start(5000)
+
     def _build_ui(self):
         layout = QVBoxLayout(self)
 
@@ -700,10 +725,6 @@ class ProtonRunner(QWidget):
         self.actions_widget = QWidget()
         btn_row = QHBoxLayout(self.actions_widget)
         btn_row.setContentsMargins(0, 0, 0, 0)
-        refresh_btn = QPushButton('Atualizar')
-        refresh_btn.clicked.connect(self._refresh)
-        btn_row.addWidget(refresh_btn)
-
         add_pfx_btn = QPushButton('Adicionar Prefixo')
         add_pfx_btn.clicked.connect(self._add_custom_prefix)
         btn_row.addWidget(add_pfx_btn)
@@ -784,9 +805,6 @@ class ProtonRunner(QWidget):
         self.wemod_stop_btn.setEnabled(False)
         btn_row.addWidget(self.wemod_stop_btn)
 
-        refresh_btn = QPushButton('Atualizar')
-        refresh_btn.clicked.connect(self._wemod_refresh)
-        btn_row.addWidget(refresh_btn)
         btn_row.addStretch()
         layout.addLayout(btn_row)
 
@@ -815,6 +833,9 @@ class ProtonRunner(QWidget):
             self._wemod_log(f'Falha no download: {e}')
 
     def _wemod_refresh(self):
+        sel = self.wemod_tree.selectedItems()
+        sel_pfx = sel[0].data(0, Qt.ItemDataRole.UserRole).get('wineprefix') if sel else None
+
         self.wemod_tree.clear()
 
         downloaded = os.path.isfile(wm.WEMOD_EXE_PATH)
@@ -848,6 +869,14 @@ class ProtonRunner(QWidget):
             ])
             item.setData(0, Qt.ItemDataRole.UserRole, e)
             self.wemod_tree.addTopLevelItem(item)
+
+        if sel_pfx:
+            for i in range(self.wemod_tree.topLevelItemCount()):
+                item = self.wemod_tree.topLevelItem(i)
+                d = item.data(0, Qt.ItemDataRole.UserRole)
+                if d and d.get('wineprefix') == sel_pfx:
+                    self.wemod_tree.setCurrentItem(item)
+                    break
 
     def _wemod_selected_prefix(self):
         sel = self.wemod_tree.selectedItems()
@@ -1108,6 +1137,19 @@ class ProtonRunner(QWidget):
         self._load_tree()
         self._log('OK')
 
+    def _auto_refresh(self):
+        sel = self.tree.selectedItems()
+        sel_pfx = sel[0].data(0, Qt.ItemDataRole.UserRole).get('wineprefix') if sel else None
+        self._load_tree()
+        if sel_pfx:
+            for i in range(self.tree.topLevelItemCount()):
+                item = self.tree.topLevelItem(i)
+                d = item.data(0, Qt.ItemDataRole.UserRole)
+                if d and d.get('wineprefix') == sel_pfx:
+                    self.tree.setCurrentItem(item)
+                    break
+        self._wemod_refresh()
+
     def _load_tree(self):
         self.tree.clear()
         for e in get_all_entries():
@@ -1138,11 +1180,48 @@ class ProtonRunner(QWidget):
         if data and not data.get('wineprefix'):
             self._log('⚠  Entrada selecionada não tem WINEPREFIX — selecione outra.')
 
+    # ── kill prefix processes ──────────────────────────────────────
+
+    def _kill_prefix_processes(self, wineprefix):
+        killed = []
+        for entry in os.listdir('/proc'):
+            if not entry.isdigit():
+                continue
+            env_raw = _read_file_safe(f'/proc/{entry}/environ', 'rb')
+            if not env_raw:
+                continue
+            env_str = env_raw.decode('utf-8', errors='replace')
+            if f'WINEPREFIX={wineprefix}' not in env_str:
+                continue
+            try:
+                os.kill(int(entry), 9)
+                killed.append(int(entry))
+            except (OSError, PermissionError):
+                pass
+        if killed:
+            self._log(f'{len(killed)} processo(s) finalizado(s) no prefixo')
+        else:
+            self._log('Nenhum processo rodando neste prefixo')
+        # tambem mata wineserver
+        try:
+            subprocess.run(
+                ['wineserver', '-k'],
+                env={'WINEPREFIX': wineprefix},
+                capture_output=True, timeout=5,
+            )
+        except Exception:
+            pass
+
     # ── context menus ─────────────────────────────────────────────
 
     def _tree_context_menu(self, pos):
         item = self.tree.itemAt(pos)
         if not item:
+            menu = QMenu(self)
+            act_show = menu.addAction('Mostrar Ocultos')
+            action = menu.exec(self.tree.viewport().mapToGlobal(pos))
+            if action == act_show:
+                self._show_hidden_prefixes()
             return
         data = item.data(0, Qt.ItemDataRole.UserRole)
         if not data:
@@ -1150,9 +1229,12 @@ class ProtonRunner(QWidget):
         pfx = data.get('wineprefix', '')
         if not pfx:
             return
+        has_pid = bool(data.get('pid'))
         menu = QMenu(self)
         act_copy = menu.addAction('Copiar WINEPREFIX')
         act_open = menu.addAction('Abrir pasta do WINEPREFIX')
+        if has_pid:
+            act_kill = menu.addAction('Matar Processo')
         menu.addSeparator()
         act_remove = menu.addAction('Remover Prefixo')
         action = menu.exec(self.tree.viewport().mapToGlobal(pos))
@@ -1162,6 +1244,9 @@ class ProtonRunner(QWidget):
         elif action == act_open:
             if os.path.isdir(pfx):
                 subprocess.Popen(['xdg-open', pfx])
+        elif has_pid and action == act_kill:
+            self._kill_prefix_processes(pfx)
+            self._refresh()
         elif action == act_remove:
             self._remove_prefix()
 
@@ -1178,6 +1263,7 @@ class ProtonRunner(QWidget):
         menu = QMenu(self)
         act_copy = menu.addAction('Copiar WINEPREFIX')
         act_open = menu.addAction('Abrir pasta do WINEPREFIX')
+        act_kill = menu.addAction('Matar Processos do Prefixo')
         action = menu.exec(self.wemod_tree.viewport().mapToGlobal(pos))
         if action == act_copy:
             QApplication.clipboard().setText(pfx)
@@ -1185,6 +1271,9 @@ class ProtonRunner(QWidget):
         elif action == act_open:
             if os.path.isdir(pfx):
                 subprocess.Popen(['xdg-open', pfx])
+        elif action == act_kill:
+            self._kill_prefix_processes(pfx)
+            QTimer.singleShot(500, self._wemod_refresh)
 
     # ── actions ────────────────────────────────────────────────────
 
@@ -1262,6 +1351,63 @@ class ProtonRunner(QWidget):
         self._wemod_refresh()
         self._log(f'Prefixo Não-Steam adicionado: {name.strip()} → {pfx}')
 
+    def _show_hidden_prefixes(self):
+        cfg = load_config()
+        hidden = cfg.get('hidden_prefixes', [])
+        if not hidden:
+            QMessageBox.information(self, 'Ocultos', 'Nenhum prefixo oculto.')
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle('Prefixos Ocultos')
+        dialog.setMinimumSize(500, 350)
+        layout = QVBoxLayout(dialog)
+
+        label = QLabel(
+            f'{len(hidden)} prefixo(s) oculto(s). '
+            'Marque os que deseja restaurar e clique em "Restaurar":'
+        )
+        layout.addWidget(label)
+
+        list_widget = QListWidget()
+        for pfx in hidden:
+            item = QListWidgetItem(pfx)
+            item.setCheckState(Qt.CheckState.Unchecked)
+            item.setData(Qt.ItemDataRole.UserRole, pfx)
+            list_widget.addItem(item)
+        layout.addWidget(list_widget)
+
+        btn_row = QHBoxLayout()
+        btn_restore = QPushButton('Restaurar Selecionados')
+        btn_close = QPushButton('Fechar')
+        btn_row.addWidget(btn_restore)
+        btn_row.addWidget(btn_close)
+        layout.addLayout(btn_row)
+
+        def restore():
+            to_restore = []
+            for i in range(list_widget.count()):
+                item = list_widget.item(i)
+                if item.checkState() == Qt.CheckState.Checked:
+                    to_restore.append(item.data(Qt.ItemDataRole.UserRole))
+            if not to_restore:
+                QMessageBox.information(dialog, 'Info', 'Nenhum item selecionado.')
+                return
+            cfg = load_config()
+            cfg['hidden_prefixes'] = [
+                h for h in cfg.get('hidden_prefixes', [])
+                if h not in to_restore
+            ]
+            save_config(cfg)
+            self._refresh()
+            self._wemod_refresh()
+            self._log(f'{len(to_restore)} prefixo(s) restaurado(s) da lista de ocultos')
+            dialog.accept()
+
+        btn_restore.clicked.connect(restore)
+        btn_close.clicked.connect(dialog.reject)
+        dialog.exec()
+
     def _remove_prefix(self):
         data = self._selected_data()
         if not data or not data.get('wineprefix'):
@@ -1278,7 +1424,7 @@ class ProtonRunner(QWidget):
             'O que deseja fazer?'
         )
         btn_lista = dialog.addButton('Só da lista', QMessageBox.ButtonRole.YesRole)
-        btn_disk = dialog.addButton('Da lista e apagar do disco', QMessageBox.ButtonRole.DestructiveRole)
+        btn_disk = dialog.addButton('Só do disco', QMessageBox.ButtonRole.DestructiveRole)
         btn_cancel = dialog.addButton('Cancelar', QMessageBox.ButtonRole.RejectRole)
         dialog.setDefaultButton(btn_cancel)
         dialog.exec()
@@ -1287,9 +1433,13 @@ class ProtonRunner(QWidget):
         if clicked == btn_cancel:
             return
 
-        delete_disk = clicked == btn_disk
+        remove_lista = clicked == btn_lista
+        remove_disk = clicked == btn_disk
 
-        if delete_disk and os.path.isdir(pfx):
+        if remove_disk:
+            if not os.path.isdir(pfx):
+                QMessageBox.warning(self, 'Aviso', 'Prefixo não existe no disco.')
+                return
             reply = QMessageBox.question(
                 self, 'Confirmar',
                 f'Tem certeza que deseja apagar permanentemente o prefixo?\n{pfx}',
@@ -1304,21 +1454,22 @@ class ProtonRunner(QWidget):
                 QMessageBox.critical(self, 'Erro', f'Não foi possível apagar o prefixo:\n{e}')
                 return
 
-        cfg = load_config()
-        if is_custom:
+        if remove_lista:
+            cfg = load_config()
             cfg['custom_prefixes'] = [
                 c for c in cfg.get('custom_prefixes', [])
                 if c['wineprefix'] != pfx
             ]
-        else:
-            hidden = cfg.setdefault('hidden_prefixes', [])
-            if pfx not in hidden:
-                hidden.append(pfx)
+            cfg.setdefault('hidden_prefixes', [])
+            cfg['hidden_prefixes'] = [h for h in cfg['hidden_prefixes'] if h != pfx]
 
-        save_config(cfg)
-        self._refresh()
-        self._wemod_refresh()
-        self._log(f'Prefixo removido da lista: {name}')
+            if not is_custom:
+                cfg['hidden_prefixes'].append(pfx)
+
+            save_config(cfg)
+            self._refresh()
+            self._wemod_refresh()
+            self._log(f'Prefixo removido da lista: {name}')
 
     def _log(self, msg):
         self.log.append(msg)
