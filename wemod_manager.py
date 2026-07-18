@@ -832,12 +832,12 @@ def _verify_installation(wineprefix: str, wine_bin: str,
     else:
         results['wemod_exe'] = ('fail', 'WeMod.exe nao encontrado')
 
-    # 5. version.dll
+    # 5. version.dll (opcional — pode ser omitido)
     version_dll = os.path.join(WEMOD_BIN_DIR, 'version.dll')
     if os.path.isfile(version_dll):
         results['version_dll'] = ('ok', 'version.dll presente')
     else:
-        results['version_dll'] = ('fail', 'version.dll ausente')
+        results['version_dll'] = ('warn', 'version.dll ausente — opcional')
 
     # 6. Login symlink
     WeModExternal = os.path.join(
@@ -854,30 +854,36 @@ def _verify_installation(wineprefix: str, wine_bin: str,
 
 
 def install_wemod_prefix(wineprefix: str,
-                        log_callback=None) -> bool:
+                        log_callback=None,
+                        progress_callback=None) -> bool:
     """Instala WeMod + .NET 4.8 + dependencias no prefixo.
     log_callback: funcao opcional chamada para cada linha de log em tempo real.
+    progress_callback: funcao opcional(stage_name: str, percent: int).
     Retorna True se sucesso."""
     if log_callback is None:
         log_callback = _log
+    if progress_callback is None:
+        progress_callback = lambda s, p: None
 
     marker = os.path.join(wineprefix, WEMOD_MARKER)
     if os.path.isfile(marker):
         os.remove(marker)
 
     is_portproton = _is_portproton_prefix(wineprefix)
+    progress_callback('Preparando…', 0)
     log_callback(f'Instalando WeMod em {wineprefix}...')
     wine_bin = _get_wine_binary(wineprefix)
     log_callback(f'Wine: {wine_bin}')
 
     if is_portproton:
+        progress_callback('Configurando VKD3D…', 20)
         log_callback('Prefixo PortProton detectado — pulando winetricks')
         _ensure_vkd3d_utils(wineprefix, log_callback)
-
-    if not is_portproton:
+    else:
         # winetricks apenas para prefixos que nao sao PortProton
         winetricks_sh = os.path.join(WEMOD_DATA_DIR, 'winetricks')
         if not os.path.isfile(winetricks_sh):
+            progress_callback('Baixando winetricks…', 5)
             log_callback('Baixando winetricks...')
             resp = _http_get(
                 'https://github.com/Winetricks/winetricks/raw/master/src/winetricks'
@@ -891,6 +897,7 @@ def install_wemod_prefix(wineprefix: str,
         wt_env['WINEDLLOVERRIDES'] = 'winemenubuilder.exe=d'
         wt_env['PATH'] = os.path.dirname(wine_bin) + ':' + wt_env.get('PATH', '')
 
+        progress_callback('winetricks: sdl, cjkfonts, vkd3d, dxvk2030…', 15)
         log_callback('winetricks: sdl, cjkfonts, vkd3d, dxvk2030...')
         subprocess.run(
             [winetricks_sh, 'sdl', 'cjkfonts', 'vkd3d', 'dxvk2030'],
@@ -900,20 +907,25 @@ def install_wemod_prefix(wineprefix: str,
 
         # Instala .NET 4.8 apenas se nao estiver presente
         if _is_dotnet48_installed(wineprefix, wine_bin):
+            progress_callback('.NET 4.8 já instalado', 50)
             log_callback('.NET Framework 4.8 ja instalado, pulando')
         else:
+            progress_callback('Instalando .NET 4.8 (pode levar 20-40 min)…', 30)
             log_callback('Instalando .NET Framework 4.8 (pode levar 20-40 min)...')
             dotnet_ok = _install_dotnet48_direct(wine_bin, wineprefix, log_callback)
             if dotnet_ok:
+                progress_callback('.NET 4.8 instalado', 55)
                 log_callback('.NET 4.8 instalado com sucesso')
             else:
                 log_callback('ATENCAO: .NET 4.8 pode nao ter instalado corretamente')
                 log_callback('WeMod pode reclamar sobre .NET')
 
+    progress_callback('winecfg -v win10…', 65)
     log_callback('winecfg -v win10...')
     _run_wine(wine_bin, wineprefix, ['winecfg', '-v', 'win10'])
 
     # ── verificacao pos-instalacao ─────────────────────────────────
+    progress_callback('Criando symlinks…', 75)
     log_callback('')
     log_callback('═' * 40)
     log_callback('VERIFICANDO INSTALACAO...')
@@ -935,6 +947,7 @@ def install_wemod_prefix(wineprefix: str,
     sync_wemod_login(wineprefix)
     _fix_wemod_window_position(wineprefix)
 
+    progress_callback('Verificando instalação…', 85)
     checks = _verify_installation(wineprefix, wine_bin, log_callback)
     errors = 0
     warnings = 0
@@ -954,9 +967,11 @@ def install_wemod_prefix(wineprefix: str,
         log_callback('RESULTADO: todos os componentes OK')
     log_callback('')
 
+    progress_callback('Finalizando…', 95)
     with open(marker, 'w') as f:
         f.write('1')
     log_callback('WeMod instalado com sucesso!')
+    progress_callback('Concluído', 100)
     return errors == 0
 
 
@@ -1347,3 +1362,41 @@ def get_status(wineprefix: str) -> str:
     if is_wemod_running(wineprefix):
         return 'Rodando'
     return 'Instalado'
+
+
+def remove_wemod_prefix(wineprefix: str):
+    """Remove apenas os artefatos do WeMod do prefixo, sem afetar o resto.
+
+    Remove:
+      - drive_c/WeMod/ (symlink)
+      - drive_c/users/*/AppData/Roaming/WeMod (symlink)
+      - .wemod_installed (marker)
+    """
+    stop_wemod(wineprefix)
+
+    # drive_c/WeMod/ symlink
+    c_wemod = os.path.join(wineprefix, 'drive_c', 'WeMod')
+    if os.path.islink(c_wemod) or os.path.isdir(c_wemod):
+        if os.path.islink(c_wemod):
+            os.remove(c_wemod)
+        else:
+            shutil.rmtree(c_wemod, ignore_errors=True)
+        _log(f'Removido {c_wemod}')
+
+    # login symlink
+    win_user = _get_windows_user(wineprefix)
+    appdata_wemod = os.path.join(
+        wineprefix, f'drive_c/users/{win_user}/AppData/Roaming/WeMod'
+    )
+    if os.path.islink(appdata_wemod):
+        os.remove(appdata_wemod)
+        _log(f'Removido symlink de login {appdata_wemod}')
+    elif os.path.isdir(appdata_wemod):
+        shutil.rmtree(appdata_wemod, ignore_errors=True)
+        _log(f'Removido diretorio de login {appdata_wemod}')
+
+    # .wemod_installed marker
+    marker = os.path.join(wineprefix, WEMOD_MARKER)
+    if os.path.isfile(marker):
+        os.remove(marker)
+        _log(f'Removido marker {marker}')

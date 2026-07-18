@@ -645,6 +645,7 @@ class ProtonRunner(QWidget):
         self.monitor_timer.timeout.connect(self._monitor_tick)
 
         self._build_ui()
+        self.log_widget.setVisible(False)
         self._refresh()
         self._refresh_trainer_list()
         QTimer.singleShot(150, self._wemod_refresh)
@@ -671,7 +672,7 @@ class ProtonRunner(QWidget):
         self.tree.itemSelectionChanged.connect(self._on_select)
         self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self._tree_context_menu)
-        self.tabs.addTab(self.tree, 'Todos')
+        self.tabs.addTab(self.tree, 'W/Process')
 
         # ── tab 1: auto monitor ──
         monitor_tab = QWidget()
@@ -746,7 +747,7 @@ class ProtonRunner(QWidget):
         exe_row.setContentsMargins(0, 0, 0, 0)
         exe_row.addWidget(QLabel('EXE:'))
         self.exe_path = QLineEdit()
-        self.exe_path.setPlaceholderText('Caminho do .exe do trainer')
+        self.exe_path.setPlaceholderText('Caminho do .exe')
         self.exe_path.textChanged.connect(self._on_select)
         exe_row.addWidget(self.exe_path)
         browse_btn = QPushButton('Procurar…')
@@ -762,7 +763,7 @@ class ProtonRunner(QWidget):
         add_pfx_btn.clicked.connect(self._add_custom_prefix)
         btn_row.addWidget(add_pfx_btn)
 
-        self.run_btn = QPushButton('Executar Trainer no Prefixo')
+        self.run_btn = QPushButton('Executar no Prefixo')
         self.run_btn.setEnabled(False)
         self.run_btn.clicked.connect(self._run)
         btn_row.addWidget(self.run_btn)
@@ -818,7 +819,7 @@ class ProtonRunner(QWidget):
 
         # action buttons
         btn_row = QHBoxLayout()
-        self.wemod_install_btn = QPushButton('Instalar WeMod')
+        self.wemod_install_btn = QPushButton('Instalar')
         self.wemod_install_btn.clicked.connect(self._wemod_install)
         self.wemod_install_btn.setEnabled(False)
         btn_row.addWidget(self.wemod_install_btn)
@@ -884,6 +885,9 @@ class ProtonRunner(QWidget):
             pfx = e.get('wineprefix', '')
             if not pfx:
                 continue
+            # WeMod tab: mostra apenas prefixes, não processos wine rodando
+            if e.get('pid'):
+                continue
             if not pfx or not os.path.isdir(pfx):
                 st = '—'
             else:
@@ -932,12 +936,38 @@ class ProtonRunner(QWidget):
         self._wemod_log(f'Instalando WeMod em {pfx}...')
         self._wemod_log('')
 
+        # dialog modal sem botão de fechar (trava closeEvent)
+        class _InstallDialog(QDialog):
+            def closeEvent(self, event):
+                event.ignore()
+        self._wemod_progress = _InstallDialog(self)
+        self._wemod_progress.setWindowTitle('Instalando WeMod')
+        self._wemod_progress.setModal(True)
+        self._wemod_progress.setMinimumWidth(400)
+        layout = QVBoxLayout(self._wemod_progress)
+        self._wemod_progress_label = QLabel('Preparando…')
+        self._wemod_progress_label.setWordWrap(True)
+        layout.addWidget(self._wemod_progress_label)
+        self._wemod_progress.show()
+        QApplication.processEvents()
+
+        # desabilita input da janela principal
+        self.setEnabled(False)
+
         def gui_log(msg):
             QTimer.singleShot(0, lambda: self._wemod_log(msg))
 
+        def gui_progress(stage, pct):
+            def _update():
+                self._wemod_progress_label.setText(stage)
+                QApplication.processEvents()
+            QTimer.singleShot(0, _update)
+
         def task():
             try:
-                ok = wm.install_wemod_prefix(pfx, log_callback=gui_log)
+                ok = wm.install_wemod_prefix(
+                    pfx, log_callback=gui_log, progress_callback=gui_progress
+                )
                 if not ok:
                     gui_log('ERRO: instalacao falhou')
             except Exception as e:
@@ -948,7 +978,10 @@ class ProtonRunner(QWidget):
         threading.Thread(target=task, daemon=True).start()
 
     def _finish_install(self):
-        self.wemod_install_btn.setEnabled(True)
+        self.setEnabled(True)
+        if hasattr(self, '_wemod_progress') and self._wemod_progress:
+            self._wemod_progress.close()
+            self._wemod_progress.deleteLater()
         self._wemod_refresh()
 
     def _wemod_clear_cache(self):
@@ -975,13 +1008,7 @@ class ProtonRunner(QWidget):
         )
         if reply != QMessageBox.StandardButton.Yes:
             return
-        wm.stop_wemod(pfx)
-        marker = os.path.join(pfx, wm.WEMOD_MARKER)
-        if os.path.isfile(marker):
-            os.remove(marker)
-        marker = os.path.join(pfx, wm.WEMOD_MARKER)
-        if os.path.isfile(marker):
-            os.remove(marker)
+        wm.remove_wemod_prefix(pfx)
         self._wemod_log('WeMod desinstalado do prefixo')
         self._wemod_refresh()
 
@@ -1016,7 +1043,7 @@ class ProtonRunner(QWidget):
             return
         installed = wm.is_wemod_installed(pfx)
         running = wm.is_wemod_running(pfx)
-        self.wemod_install_btn.setEnabled(not running)
+        self.wemod_install_btn.setEnabled(not installed and not running)
         self.wemod_install_btn.setText('Instalar')
         self.wemod_uninstall_btn.setEnabled(installed and not running)
         self.wemod_start_btn.setEnabled(installed and not running)
@@ -1028,7 +1055,7 @@ class ProtonRunner(QWidget):
         hide = idx in (1, 2)
         self.exe_row_widget.setVisible(not hide)
         self.actions_widget.setVisible(not hide)
-        self.log_widget.setVisible(not hide)
+        self.log_widget.setVisible(False)
 
     # ── trainers folder ────────────────────────────────────────────
 
@@ -1181,7 +1208,6 @@ class ProtonRunner(QWidget):
                 if d and d.get('wineprefix') == sel_pfx:
                     self.tree.setCurrentItem(item)
                     break
-        self._wemod_refresh()
 
     def _load_tree(self):
         self.tree.clear()
