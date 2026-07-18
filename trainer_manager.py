@@ -510,7 +510,12 @@ def get_all_entries():
 
 # ── wine binary ────────────────────────────────────────────────────
 
-def find_wine_binary():
+def find_wine_binary(wineprefix=None):
+    if wineprefix:
+        from wemod_manager import _get_wine_binary
+        wb = _get_wine_binary(wineprefix)
+        if wb:
+            return wb
     steam_roots = [
         os.path.expanduser('~/.local/share/Steam'),
         os.path.expanduser('~/.steam/steam'),
@@ -546,12 +551,40 @@ def find_wine_binary():
     return shutil.which('wine') or shutil.which('wine64') or 'wine'
 
 
+def _setup_proton_env_for_exe(env, wine_bin):
+    """Configura LD_LIBRARY_PATH e WINEDLLPATH para wine do Proton."""
+    wine_real = os.path.realpath(wine_bin)
+    wine_dir = os.path.dirname(wine_real)
+    # Estrutura tipica: .../Proton-X/files/bin/wine
+    for base in (os.path.dirname(wine_dir), os.path.dirname(os.path.dirname(wine_dir))):
+        lib = os.path.join(base, 'lib')
+        lib64 = os.path.join(base, 'lib64')
+        dll_paths = []
+        lib_paths = []
+        for d in (lib64, lib):
+            wine_dll = os.path.join(d, 'wine')
+            if os.path.isdir(wine_dll):
+                dll_paths.append(wine_dll)
+            if os.path.isdir(d):
+                lib_paths.append(d)
+        if dll_paths:
+            env['WINEDLLPATH'] = ':'.join(dll_paths)
+        if lib_paths:
+            existing = env.get('LD_LIBRARY_PATH', '')
+            env['LD_LIBRARY_PATH'] = ':'.join(lib_paths) + (':' + existing if existing else '')
+            break
+
+
 def run_exe_in_prefix(wine_bin, exe_path, wineprefix, pin=None, extra_env=None):
     logfile = f'/tmp/trainer_{pin or os.getpid()}.log'
     env = os.environ.copy()
     env['WINEPREFIX'] = wineprefix
     if extra_env:
         env.update(extra_env)
+
+    # Se o wine for de um Proton, configura LD_LIBRARY_PATH e WINEDLLPATH
+    if 'proton' in wine_bin.lower():
+        _setup_proton_env_for_exe(env, wine_bin)
 
     subprocess.Popen(
         [wine_bin, exe_path],
@@ -753,10 +786,10 @@ class ProtonRunner(QWidget):
         dl_row = QHBoxLayout()
         self.wemod_dl_btn = QPushButton('Baixar WeMod.exe')
         self.wemod_dl_btn.clicked.connect(self._wemod_download)
-        self.wemod_dl_btn.setEnabled(not os.path.isfile(wm.WEMOD_EXE_PATH))
+        self.wemod_dl_btn.setEnabled(not wm.is_wemod_downloaded())
         dl_row.addWidget(self.wemod_dl_btn)
         self.wemod_dl_status = QLabel(
-            'OK' if os.path.isfile(wm.WEMOD_EXE_PATH) else ''
+            'OK' if wm.is_wemod_downloaded() else ''
         )
         dl_row.addWidget(self.wemod_dl_status)
 
@@ -838,7 +871,7 @@ class ProtonRunner(QWidget):
 
         self.wemod_tree.clear()
 
-        downloaded = os.path.isfile(wm.WEMOD_EXE_PATH)
+        downloaded = wm.is_wemod_downloaded()
         has_cache = os.path.isdir(wm.WEMOD_BIN_DIR)
         self.wemod_dl_btn.setEnabled(not downloaded)
         self.wemod_clear_cache_btn.setEnabled(has_cache)
@@ -888,7 +921,7 @@ class ProtonRunner(QWidget):
         pfx = self._wemod_selected_prefix()
         if not pfx:
             return
-        if not os.path.isfile(wm.WEMOD_EXE_PATH):
+        if not wm.is_wemod_downloaded():
             try:
                 wm.download_wemod()
             except Exception as e:
@@ -1115,7 +1148,7 @@ class ProtonRunner(QWidget):
 
             wine_bin = (
                 _find_wine_bin_for_pid(proc['pid'])
-                or find_wine_binary()
+                or find_wine_binary(pfx)
             )
             for trainer in checked:
                 logfile = run_exe_in_prefix(
@@ -1183,6 +1216,7 @@ class ProtonRunner(QWidget):
     # ── kill prefix processes ──────────────────────────────────────
 
     def _kill_prefix_processes(self, wineprefix):
+        wineprefix_bytes = f'WINEPREFIX={wineprefix}\0'.encode('utf-8')
         killed = []
         for entry in os.listdir('/proc'):
             if not entry.isdigit():
@@ -1190,8 +1224,7 @@ class ProtonRunner(QWidget):
             env_raw = _read_file_safe(f'/proc/{entry}/environ', 'rb')
             if not env_raw:
                 continue
-            env_str = env_raw.decode('utf-8', errors='replace')
-            if f'WINEPREFIX={wineprefix}' not in env_str:
+            if wineprefix_bytes not in env_raw:
                 continue
             try:
                 os.kill(int(entry), 9)
@@ -1202,15 +1235,8 @@ class ProtonRunner(QWidget):
             self._log(f'{len(killed)} processo(s) finalizado(s) no prefixo')
         else:
             self._log('Nenhum processo rodando neste prefixo')
-        # tambem mata wineserver
-        try:
-            subprocess.run(
-                ['wineserver', '-k'],
-                env={'WINEPREFIX': wineprefix},
-                capture_output=True, timeout=5,
-            )
-        except Exception:
-            pass
+        # NOTA: nao mata wineserver para evitar derrubar outros processos
+        # (ex.: jogo) que estejam rodando no mesmo prefixo
 
     # ── context menus ─────────────────────────────────────────────
 
@@ -1308,8 +1334,8 @@ class ProtonRunner(QWidget):
         pid = data.get('pid')
         wine_bin = (
             _find_wine_bin_for_pid(pid)
-            or find_wine_binary()
-        ) if pid else find_wine_binary()
+            or find_wine_binary(pfx)
+        ) if pid else find_wine_binary(pfx)
         self._log(f'Wine:    {wine_bin}')
         self._log(f'EXE:     {exe}')
 
