@@ -1288,6 +1288,7 @@ class ProtonRunner(QWidget):
         if has_pid:
             act_kill = menu.addAction('Matar Processo')
         menu.addSeparator()
+        act_hide = menu.addAction('Ocultar Prefixo')
         act_remove = menu.addAction('Remover Prefixo')
         action = menu.exec(self.tree.viewport().mapToGlobal(pos))
         if action == act_copy:
@@ -1299,8 +1300,10 @@ class ProtonRunner(QWidget):
         elif has_pid and action == act_kill:
             self._kill_prefix_processes(pfx)
             self._refresh()
+        elif action == act_hide:
+            self._hide_prefix(pfx)
         elif action == act_remove:
-            self._remove_prefix()
+            self._remove_prefix(pfx, data.get('source') == 'Não-Steam')
 
     def _wemod_tree_context_menu(self, pos):
         item = self.wemod_tree.itemAt(pos)
@@ -1315,7 +1318,6 @@ class ProtonRunner(QWidget):
         menu = QMenu(self)
         act_copy = menu.addAction('Copiar WINEPREFIX')
         act_open = menu.addAction('Abrir pasta do WINEPREFIX')
-        act_kill = menu.addAction('Matar Processos do Prefixo')
         action = menu.exec(self.wemod_tree.viewport().mapToGlobal(pos))
         if action == act_copy:
             QApplication.clipboard().setText(pfx)
@@ -1323,9 +1325,6 @@ class ProtonRunner(QWidget):
         elif action == act_open:
             if os.path.isdir(pfx):
                 subprocess.Popen(['xdg-open', pfx])
-        elif action == act_kill:
-            self._kill_prefix_processes(pfx)
-            QTimer.singleShot(500, self._wemod_refresh)
 
     # ── actions ────────────────────────────────────────────────────
 
@@ -1460,68 +1459,40 @@ class ProtonRunner(QWidget):
         btn_close.clicked.connect(dialog.reject)
         dialog.exec()
 
-    def _remove_prefix(self):
-        data = self._selected_data()
-        if not data or not data.get('wineprefix'):
+    def _hide_prefix(self, pfx):
+        cfg = load_config()
+        hidden = cfg.setdefault('hidden_prefixes', [])
+        if pfx not in hidden:
+            hidden.append(pfx)
+        save_config(cfg)
+        self._refresh()
+        self._wemod_refresh()
+        self._log(f'Prefixo ocultado: {pfx}')
+
+    def _remove_prefix(self, pfx, is_custom=False):
+        if not os.path.isdir(pfx):
+            QMessageBox.warning(self, 'Aviso', 'Prefixo não existe no disco.')
             return
-
-        pfx = data['wineprefix']
-        name = data.get('name', pfx)
-        is_custom = data.get('source') == 'Não-Steam'
-
-        dialog = QMessageBox(self)
-        dialog.setWindowTitle('Remover Prefixo')
-        dialog.setText(
-            f'Prefixo: {name}\n{pfx}\n\n'
-            'O que deseja fazer?'
+        reply = QMessageBox.question(
+            self, 'Confirmar',
+            f'Tem certeza que deseja apagar permanentemente o prefixo?\n{pfx}',
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
-        btn_lista = dialog.addButton('Só da lista', QMessageBox.ButtonRole.YesRole)
-        btn_disk = dialog.addButton('Só do disco', QMessageBox.ButtonRole.DestructiveRole)
-        btn_cancel = dialog.addButton('Cancelar', QMessageBox.ButtonRole.RejectRole)
-        dialog.setDefaultButton(btn_cancel)
-        dialog.exec()
-
-        clicked = dialog.clickedButton()
-        if clicked == btn_cancel:
+        if reply != QMessageBox.StandardButton.Yes:
             return
-
-        remove_lista = clicked == btn_lista
-        remove_disk = clicked == btn_disk
-
-        if remove_disk:
-            if not os.path.isdir(pfx):
-                QMessageBox.warning(self, 'Aviso', 'Prefixo não existe no disco.')
-                return
-            reply = QMessageBox.question(
-                self, 'Confirmar',
-                f'Tem certeza que deseja apagar permanentemente o prefixo?\n{pfx}',
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            )
-            if reply != QMessageBox.StandardButton.Yes:
-                return
-            try:
-                shutil.rmtree(pfx)
-                self._log(f'Prefixo apagado do disco: {pfx}')
-            except Exception as e:
-                QMessageBox.critical(self, 'Erro', f'Não foi possível apagar o prefixo:\n{e}')
-                return
-
-        if remove_lista:
+        self._kill_prefix_processes(pfx)
+        import subprocess
+        result = subprocess.run(['rm', '-rf', pfx], capture_output=True, text=True)
+        if result.returncode != 0:
+            QMessageBox.critical(self, 'Erro', f'Não foi possível apagar o prefixo:\n{result.stderr}')
+            return
+        if is_custom:
             cfg = load_config()
-            cfg['custom_prefixes'] = [
-                c for c in cfg.get('custom_prefixes', [])
-                if c['wineprefix'] != pfx
-            ]
-            cfg.setdefault('hidden_prefixes', [])
-            cfg['hidden_prefixes'] = [h for h in cfg['hidden_prefixes'] if h != pfx]
-
-            if not is_custom:
-                cfg['hidden_prefixes'].append(pfx)
-
+            cfg['custom_prefixes'] = [c for c in cfg.get('custom_prefixes', []) if c['wineprefix'] != pfx]
             save_config(cfg)
-            self._refresh()
-            self._wemod_refresh()
-            self._log(f'Prefixo removido da lista: {name}')
+        self._refresh()
+        self._wemod_refresh()
+        self._log(f'Prefixo apagado do disco: {pfx}')
 
     def _log(self, msg):
         self.log.append(msg)
