@@ -29,7 +29,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 WEMOD_PREFIXES_DIR = os.path.join(SCRIPT_DIR, 'wemod_prefixes')
 
 BUILT_PREFIX_CACHE = os.path.join(WEMOD_DATA_DIR, 'prefix_cache')
-BUILT_PREFIX_DIR = os.path.join(SCRIPT_DIR, 'built_prefixes')
+BUILT_PREFIX_DIR = os.path.expanduser('~/.config/trainer_manager/built_prefixes')
 BUILT_PREFIX_REPO_USER = 'DeckCheatz'
 BUILT_PREFIX_REPO_NAME = 'BuiltPrefixes-dev'
 

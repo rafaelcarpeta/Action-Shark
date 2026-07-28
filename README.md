@@ -1,8 +1,8 @@
-# Action Shark
+# Action Shark v1.1
 
 Gerenciador gráfico (PyQt6) para executar **trainers** (aplicativos que modificam o comportamento de jogos em tempo de execução, como vidas infinitas, dinheiro infinito, etc.) no Linux usando prefixes Wine/Proton. Detecta automaticamente jogos Steam e de vários launchers, além de integrar o **WeMod** completamente (download, instalação com .NET 4.8, launch e stop).
 
-![Action Shark](Captura_de_tela_20260709_133047.png)
+![Action Shark](images/Screenshot_20260728_143446.png)
 
 ## Como funciona
 
@@ -13,16 +13,20 @@ O programa varre o sistema em busca de:
 3. **Prefixes de launchers** lendo arquivos de configuração e pastas conhecidas
 4. **Prefixes customizados** adicionados manualmente pelo usuário
 
-Com um prefixo selecionado, você pode executar qualquer `.exe` (trainer) dentro dele com o Wine correto. A guia **Auto** permite monitorar um processo e disparar trainers automaticamente quando o jogo iniciar. A guia **WeMod** baixa, instala e gerencia o WeMod no prefixo desejado.
+Com um prefixo selecionado, você pode executar qualquer `.exe` (trainer) dentro dele com o Wine correto. A aba **Trainers** permite selecionar um prefixo e um trainer para executar diretamente. A guia **WeMod** baixa, instala e gerencia o WeMod no prefixo desejado.
 
 ## Funcionalidades
 
 - **Detecção automática** de jogos e prefixes Steam, Lutris, Bottles, Heroic, PortProton, PlayOnLinux, Hydra
 - **Execução de trainers** no Wine/Proton correto (detecta o binário wine automaticamente)
-- **Monitor automático**: observe um processo e dispare trainers assim que ele aparecer
+- **Seleção de prefixo**: selecione um prefixo e um trainer para executar diretamente na aba Trainers
+- **Backup e restore**: salve backups de prefixes e restaure quando necessário
+- **Salvar como Prefixo Padrão**: exporte um prefixo como zip em `~/.config/trainer_manager/built_prefixes/`
+- **Merge de prefixes**: instale um prefixo padrão sobre um prefixo existente, preservando dados
+- **Ocultar prefixos**: oculte prefixos indesejados da lista
+- **Remover prefixos**: remova prefixos do disco permanentemente
 - **WeMod integrado**: download da versão mais recente, instalação (winetricks + .NET 4.8 + DXVK + VKD3D), login compartilhado entre prefixes, start/stop
-- **Menu de contexto**: copiar WINEPREFIX, abrir pasta, remover prefixo
-- **Prefixos customizados**: adicione qualquer prefixo manualmente
+- **Menu de contexto**: copiar WINEPREFIX, abrir pasta, backup, restaurar, salvar como padrão, ocultar, remover
 
 ## Launchers suportados
 
@@ -102,6 +106,7 @@ Remove os atalhos do menu e desktop, com opção de apagar a pasta de configura�
 Action Shark/
 ├── trainer_manager.py      # Interface gráfica principal (PyQt6)
 ├── wemod_manager.py        # Gerenciamento do WeMod (download, instalação, start/stop)
+├── wemod_built_prefix.py   # Gerenciamento de prefixes built (merge, download, scan)
 ├── trainer_manager.desktop # Atalho de menu (.desktop)
 ├── install.sh              # Script de instalação (atalhos menu + desktop)
 ├── uninstall.sh            # Script de desinstalação
@@ -109,6 +114,10 @@ Action Shark/
 ├── LICENSE                 # Licença de uso (Não-Comercial)
 └── README.md
 ```
+
+### Prefixos Built
+
+Prefixos padrão salvos como `.zip` em `~/.config/trainer_manager/built_prefixes/`. Usados para instalar ou restaurar prefixes rapidamente sem download.
 
 ## Configuração
 

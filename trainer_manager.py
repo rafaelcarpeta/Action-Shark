@@ -34,15 +34,17 @@ from PyQt6.QtWidgets import (
     QWidget,
     QProgressBar,
     QSplitter,
+    QComboBox,
 )
 from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtGui import QIcon
 
 import wemod_manager as wm
 
 
 CONFIG_PATH = os.path.expanduser('~/.config/trainer_manager/config.json')
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-BUILT_PREFIX_DIR = os.path.join(SCRIPT_DIR, 'built_prefixes')
+BUILT_PREFIX_DIR = os.path.expanduser('~/.config/trainer_manager/built_prefixes')
 
 
 # ── helpers ────────────────────────────────────────────────────────
@@ -635,21 +637,15 @@ def _find_wine_bin_for_pid(pid):
 
 # ── UI ─────────────────────────────────────────────────────────────
 
-MONITOR_INTERVAL_MS = 5000
-
-
 class ProtonRunner(QWidget):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle('Action Shark')
+        self.setWindowTitle('Action Shark v1.1')
+        self.setWindowIcon(QIcon.fromTheme('applications-games'))
         self.setMinimumSize(800, 680)
 
         self.config = load_config()
-        self._handled_pids = set()
-        self._target_proc_name = ''
-        self.monitor_timer = QTimer(self)
-        self.monitor_timer.timeout.connect(self._monitor_tick)
 
         # fila thread-safe para comunicacao com a thread de instalacao
         self._built_msg_queue = []
@@ -681,10 +677,14 @@ class ProtonRunner(QWidget):
         self.tree = QTreeWidget()
         self.tree.setHeaderLabels(['Jogo / Prefixo', 'Fonte', 'WINEPREFIX', 'AppID'])
         h = self.tree.header()
-        h.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        h.setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)
-        h.setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)
-        h.setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)
+        h.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+        h.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
+        h.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
+        h.setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
+        self.tree.setColumnWidth(0, 300)
+        self.tree.setColumnWidth(1, 100)
+        self.tree.setColumnWidth(2, 220)
+        self.tree.setColumnWidth(3, 100)
         self.tree.itemSelectionChanged.connect(self._on_select)
         self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self._tree_context_menu)
@@ -692,12 +692,33 @@ class ProtonRunner(QWidget):
         tab0_widget = QWidget()
         tab0_layout = QVBoxLayout(tab0_widget)
         tab0_layout.setContentsMargins(0, 0, 0, 0)
-        tab0_splitter = QSplitter(Qt.Orientation.Vertical)
-        tab0_splitter.addWidget(self.tree)
-        tab0_layout.addWidget(tab0_splitter)
-        self.tabs.addTab(tab0_widget, 'W/Process')
+        tab0_layout.addWidget(self.tree)
 
-        # ── tab 1: auto monitor ──
+        wine_btn_row = QHBoxLayout()
+        wine_btn_row.addWidget(QLabel('EXE:'))
+        self.exe_path = QLineEdit()
+        self.exe_path.setPlaceholderText('Caminho do .exe')
+        self.exe_path.textChanged.connect(self._on_select)
+        wine_btn_row.addWidget(self.exe_path)
+        browse_btn = QPushButton('Procurar…')
+        browse_btn.clicked.connect(self._browse)
+        wine_btn_row.addWidget(browse_btn)
+        tab0_layout.addLayout(wine_btn_row)
+
+        wine_actions_row = QHBoxLayout()
+        add_pfx_btn = QPushButton('Adicionar Prefixo')
+        add_pfx_btn.clicked.connect(self._add_custom_prefix)
+        wine_actions_row.addWidget(add_pfx_btn)
+        self.run_btn = QPushButton('Executar no Prefixo')
+        self.run_btn.setEnabled(False)
+        self.run_btn.clicked.connect(self._run)
+        wine_actions_row.addWidget(self.run_btn)
+        wine_actions_row.addStretch()
+        tab0_layout.addLayout(wine_actions_row)
+
+        self.tabs.addTab(tab0_widget, 'Wine')
+
+        # ── tab 1: trainers ──
         monitor_tab = QWidget()
         mon_layout = QVBoxLayout(monitor_tab)
 
@@ -717,90 +738,30 @@ class ProtonRunner(QWidget):
         tr_row.addWidget(btn_scan)
         tg.addLayout(tr_row)
 
-        tg.addWidget(QLabel(
-            'Marque os trainers que serão executados quando o processo for detectado:'
-        ))
+        tg.addWidget(QLabel('Selecione um prefixo:'))
+
+        self.trainer_prefix_combo = QComboBox()
+        tg.addWidget(self.trainer_prefix_combo)
+
+        tg.addWidget(QLabel('Selecione um trainer para executar:'))
 
         self.trainer_list = QListWidget()
+        self.trainer_list.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
         tg.addWidget(self.trainer_list)
 
-        self.trainer_list.itemChanged.connect(self._update_monitor_btn)
+        btn_run_trainer = QPushButton('Iniciar Trainer')
+        btn_run_trainer.clicked.connect(self._run_trainer)
+        tg.addWidget(btn_run_trainer)
 
         mon_layout.addWidget(trainers_group)
 
-        monitor_group = QGroupBox('Monitoramento Automático')
-        mg = QVBoxLayout(monitor_group)
-
-        name_row = QHBoxLayout()
-        name_row.addWidget(QLabel('Nome do processo:'))
-        self.monitor_proc_name = QLineEdit()
-        self.monitor_proc_name.setPlaceholderText('Ex.: game.exe, eldenring.exe, eldenring')
-        self.monitor_proc_name.textChanged.connect(self._update_monitor_btn)
-        name_row.addWidget(self.monitor_proc_name)
-        mg.addLayout(name_row)
-
-        ctrl_row = QHBoxLayout()
-        self.monitor_btn = QPushButton('Iniciar Monitor')
-        self.monitor_btn.setCheckable(True)
-        self.monitor_btn.setEnabled(False)
-        self.monitor_btn.toggled.connect(self._on_monitor_toggle)
-        ctrl_row.addWidget(self.monitor_btn)
-        self.monitor_status = QLabel('⏸  Parado')
-        ctrl_row.addWidget(self.monitor_status)
-        ctrl_row.addStretch()
-        mg.addLayout(ctrl_row)
-
-        mg.addWidget(QLabel('Log do monitor:'))
-        self.auto_log = QTextEdit()
-        self.auto_log.setReadOnly(True)
-        mg.addWidget(self.auto_log)
-
-        mon_splitter = QSplitter(Qt.Orientation.Vertical)
-        mon_splitter.addWidget(trainers_group)
-        mon_splitter.addWidget(monitor_group)
-        mon_layout.addWidget(mon_splitter)
-
-        self.tabs.addTab(monitor_tab, 'Auto')
+        self.tabs.addTab(monitor_tab, 'Trainers')
 
         self._build_wemod_tab()
 
-        # ── exe path ──
-        self.exe_row_widget = QWidget()
-        exe_row = QHBoxLayout(self.exe_row_widget)
-        exe_row.setContentsMargins(0, 0, 0, 0)
-        exe_row.addWidget(QLabel('EXE:'))
-        self.exe_path = QLineEdit()
-        self.exe_path.setPlaceholderText('Caminho do .exe')
-        self.exe_path.textChanged.connect(self._on_select)
-        exe_row.addWidget(self.exe_path)
-        browse_btn = QPushButton('Procurar…')
-        browse_btn.clicked.connect(self._browse)
-        exe_row.addWidget(browse_btn)
-        layout.addWidget(self.exe_row_widget)
-
-        # ── actions ──
-        self.actions_widget = QWidget()
-        btn_row = QHBoxLayout(self.actions_widget)
-        btn_row.setContentsMargins(0, 0, 0, 0)
-        add_pfx_btn = QPushButton('Adicionar Prefixo')
-        add_pfx_btn.clicked.connect(self._add_custom_prefix)
-        btn_row.addWidget(add_pfx_btn)
-
-        self.run_btn = QPushButton('Executar no Prefixo')
-        self.run_btn.setEnabled(False)
-        self.run_btn.clicked.connect(self._run)
-        btn_row.addWidget(self.run_btn)
-        layout.addWidget(self.actions_widget)
-
-        # ── log ──
-        self.log_widget = QWidget()
-        log_ly = QVBoxLayout(self.log_widget)
-        log_ly.setContentsMargins(0, 0, 0, 0)
-        log_ly.addWidget(QLabel('Log:'))
+        # hidden log (used by _log)
         self.log = QTextEdit()
-        self.log.setReadOnly(True)
-        log_ly.addWidget(self.log)
-        tab0_splitter.addWidget(self.log_widget)
+        self.log.setVisible(False)
 
     def _build_wemod_tab(self):
         tab = QWidget()
@@ -835,6 +796,9 @@ class ProtonRunner(QWidget):
         h.setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)
         h.setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)
         h.setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)
+        self.wemod_tree.setColumnWidth(1, 100)
+        self.wemod_tree.setColumnWidth(2, 220)
+        self.wemod_tree.setColumnWidth(3, 100)
         self.wemod_tree.itemSelectionChanged.connect(self._wemod_selection_changed)
         self.wemod_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.wemod_tree.customContextMenuRequested.connect(self._wemod_tree_context_menu)
@@ -1201,26 +1165,16 @@ class ProtonRunner(QWidget):
         self.trainer_list.clear()
         exes = scan_trainer_exes(path)
         if not exes:
-            self._auto_log('Nenhum .exe encontrado na pasta selecionada.')
+            self._log('Nenhum .exe encontrado na pasta selecionada.')
             return
 
         for exe in exes:
             rel = os.path.relpath(exe, path) if path else exe
             item = QListWidgetItem(rel)
             item.setData(Qt.ItemDataRole.UserRole, exe)
-            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-            item.setCheckState(Qt.CheckState.Unchecked)
             self.trainer_list.addItem(item)
 
-        self._auto_log(f'{len(exes)} .exe(s) encontrado(s).')
-
-    def _get_checked_trainers(self):
-        checked = []
-        for i in range(self.trainer_list.count()):
-            item = self.trainer_list.item(i)
-            if item.checkState() == Qt.CheckState.Checked:
-                checked.append(item.data(Qt.ItemDataRole.UserRole))
-        return checked
+        self._log(f'{len(exes)} .exe(s) encontrado(s).')
 
     def _browse_trainers(self):
         path = QFileDialog.getExistingDirectory(
@@ -1231,97 +1185,35 @@ class ProtonRunner(QWidget):
             self.trainers_path.setText(path)
             self._refresh_trainer_list()
 
-    # ── monitor ────────────────────────────────────────────────────
+    def _run_trainer(self):
+        items = self.trainer_list.selectedItems()
+        if not items:
+            QMessageBox.information(self, 'Aviso', 'Selecione um trainer na lista.')
+            return
+        exe = items[0].data(Qt.ItemDataRole.UserRole)
 
-    def _update_monitor_btn(self):
-        has_name = bool(self.monitor_proc_name.text().strip())
-        has_checked = bool(self._get_checked_trainers())
-        self.monitor_btn.setEnabled(has_name and has_checked)
-        if self.monitor_btn.isChecked() and not (has_name and has_checked):
-            self.monitor_btn.setChecked(False)
-
-    def _on_monitor_toggle(self, active):
-        if active:
-            proc_name = self.monitor_proc_name.text().strip()
-            if not proc_name:
-                self.monitor_btn.setChecked(False)
-                return
-            self._handled_pids.clear()
-            self._target_proc_name = proc_name.lower()
-            self.monitor_timer.start(MONITOR_INTERVAL_MS)
-            self.monitor_btn.setText('Parar Monitor')
-            self.monitor_status.setText('▶  Monitorando (a cada 5s)')
-            self._auto_log(f'Monitor iniciado — alvo: "{proc_name}"')
-            self._monitor_tick()
-        else:
-            self.monitor_timer.stop()
-            self.monitor_btn.setText('Iniciar Monitor')
-            self.monitor_status.setText('⏸  Parado')
-            self._auto_log('Monitor parado')
-
-    def _monitor_tick(self):
-        try:
-            all_procs = get_running_wine_entries()
-        except Exception:
+        idx = self.trainer_prefix_combo.currentIndex()
+        if idx < 0:
+            QMessageBox.information(self, 'Aviso', 'Selecione um prefixo na lista.')
+            return
+        data = self.trainer_prefix_combo.itemData(idx)
+        pfx = data.get('wineprefix', '')
+        if not pfx:
+            QMessageBox.warning(self, 'Aviso', 'WINEPREFIX não encontrado.')
             return
 
-        target = self._target_proc_name
-        checked = self._get_checked_trainers()
-        if not checked:
-            return
+        pid = data.get('pid')
+        wine_bin = (
+            _find_wine_bin_for_pid(pid)
+            or find_wine_binary(pfx)
+        ) if pid else find_wine_binary(pfx)
 
-        # skip if any checked trainer is already running (avoid duplicates)
-        trainer_basenames = {os.path.basename(t).lower() for t in checked}
-        already_running = False
-        for p in all_procs:
-            if os.path.splitext(p['name'])[0].lower() in trainer_basenames or \
-               p['name'].lower() in trainer_basenames:
-                already_running = True
-                break
+        self._log(f'Trainer:  {os.path.basename(exe)}')
+        self._log(f'Prefix:   {pfx}')
+        self._log(f'Wine:     {wine_bin}')
 
-        for proc in all_procs:
-            if proc['pid'] in self._handled_pids:
-                continue
-            if proc['is_launcher']:
-                continue
-
-            proc_lower = proc['name'].lower()
-            if target not in proc_lower and proc_lower not in target:
-                continue
-
-            self._handled_pids.add(proc['pid'])
-
-            if already_running:
-                self._auto_log(
-                    f'[{proc["name"]}] PID {proc["pid"]} — '
-                    f'trainer já está rodando, ignorando'
-                )
-                continue
-
-            pfx = proc['wineprefix']
-            if not pfx and proc.get('appid'):
-                pfx = _find_steam_prefix(proc['appid'])
-            if not pfx:
-                self._auto_log(
-                    f'[{proc["name"]}] PID {proc["pid"]} — WINEPREFIX não encontrado'
-                )
-                continue
-
-            wine_bin = (
-                _find_wine_bin_for_pid(proc['pid'])
-                or find_wine_binary(pfx)
-            )
-            for trainer in checked:
-                logfile = run_exe_in_prefix(
-                    wine_bin, trainer, pfx, pin=proc['pid']
-                )
-                self._auto_log(
-                    f'[{proc["name"]}] PID {proc["pid"]} → '
-                    f'{os.path.basename(trainer)} (log: {logfile})'
-                )
-
-    def _auto_log(self, msg):
-        self.auto_log.append(msg)
+        logfile = run_exe_in_prefix(wine_bin, exe, pfx)
+        self._log(f'OK — trainer enviado para execução (log: {logfile})')
 
     # ── data loading ───────────────────────────────────────────────
 
@@ -1345,6 +1237,7 @@ class ProtonRunner(QWidget):
 
     def _load_tree(self):
         self.tree.clear()
+        self.trainer_prefix_combo.clear()
         for e in get_all_entries():
             item = QTreeWidgetItem([
                 e['name'],
@@ -1354,6 +1247,11 @@ class ProtonRunner(QWidget):
             ])
             item.setData(0, Qt.ItemDataRole.UserRole, e)
             self.tree.addTopLevelItem(item)
+            if e.get('wineprefix'):
+                self.trainer_prefix_combo.addItem(
+                    f"{e['name']} ({os.path.basename(e['wineprefix'])})",
+                    e,
+                )
         self._log(f'{self.tree.topLevelItemCount()} entradas')
 
     # ── selection ──────────────────────────────────────────────────
