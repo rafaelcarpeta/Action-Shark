@@ -4,6 +4,8 @@ Gerenciador gráfico (PyQt6) para executar **trainers** (aplicativos que modific
 
 ![Action Shark](images/Screenshot_20260728_143446.png)
 
+> **Aviso:** Os arquivos anexados nas releases (ex.: `ProtonCOS11.zip`) são **prefixos Wine/Proton pré-configurados** para uso com o Action Shark. **Não são o aplicativo em si.** O app deve ser clonado ou baixado separadamente do repositório.
+
 ## Como funciona
 
 O programa varre o sistema em busca de:
