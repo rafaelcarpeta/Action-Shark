@@ -1,6 +1,6 @@
 # Action Shark v1.1
 
-Gerenciador gráfico (PyQt6) para executar **trainers** (aplicativos que modificam o comportamento de jogos em tempo de execução, como vidas infinitas, dinheiro infinito, etc.) no Linux usando prefixes Wine/Proton. Detecta automaticamente jogos Steam e de vários launchers, além de integrar o **WeMod** completamente (download, instalação com .NET 4.8, launch e stop).
+Gerenciador gráfico (PyQt6) para executar **trainers** (aplicativos que modificam o comportamento de jogos em tempo de execução, como vidas infinitas, dinheiro infinito, etc.) no Linux usando prefixes Wine/Proton. Detecta automaticamente jogos Steam e de vários launchers, além de integrar o **WeMod** completamente (download, instalação via prefixo pré-configurado, launch e stop).
 
 ![Action Shark](images/Screenshot_20260728_143446.png)
 
@@ -27,7 +27,7 @@ Com um prefixo selecionado, você pode executar qualquer `.exe` (trainer) dentro
 - **Merge de prefixes**: instale um prefixo padrão sobre um prefixo existente, preservando dados
 - **Ocultar prefixos**: oculte prefixos indesejados da lista
 - **Remover prefixos**: remova prefixos do disco permanentemente
-- **WeMod integrado**: download da versão mais recente, instalação (winetricks + .NET 4.8 + DXVK + VKD3D), login compartilhado entre prefixes, start/stop
+- **WeMod integrado**: download da versão mais recente, instalação via prefixo pré-configurado, login compartilhado entre prefixes, start/stop
 - **Menu de contexto**: copiar WINEPREFIX, abrir pasta, backup, restaurar, salvar como padrão, ocultar, remover
 
 ## Launchers suportados
@@ -139,7 +139,7 @@ O config fica em `~/.config/trainer_manager/config.json`:
 
 **WeMod** é uma plataforma que reúne milhares de trainers para jogos PC em um só lugar, com interface unificada e atualizações automáticas.
 
-A integração baixa a versão estável mais recente da CDN oficial, instala as dependências necessárias (`.NET 4.8`, `DXVK`, `VKD3D`) via winetricks e gerencia o login compartilhado entre prefixes via symlinks. Requer `version.dll` (deleyload hook para Electron no Wine) — fornecido pelo [DeckCheatz/wemod-launcher](https://github.com/DeckCheatz/wemod-launcher).
+A integração utiliza um **prefixo Wine/Proton pré-configurado** (disponível nas releases do repositório) com todas as dependências já instaladas (.NET 4.8, DXVK, VKD3D). Basta baixar o prefixo e importar pelo Action Shark. O login é compartilhado entre prefixes via symlinks.
 
 > **Nota:** O WeMod requer uma conta gratuita ou **Pro** (paga) para funcionar. Crie uma em [wemod.com](https://www.wemod.com).
 
