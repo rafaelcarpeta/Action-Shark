@@ -5,6 +5,8 @@ import re
 import shutil
 import subprocess
 import sys
+import time
+import zipfile
 from pathlib import Path
 
 import threading
@@ -30,6 +32,8 @@ from PyQt6.QtWidgets import (
     QInputDialog,
     QMenu,
     QWidget,
+    QProgressBar,
+    QSplitter,
 )
 from PyQt6.QtCore import Qt, QTimer
 
@@ -37,6 +41,8 @@ import wemod_manager as wm
 
 
 CONFIG_PATH = os.path.expanduser('~/.config/trainer_manager/config.json')
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+BUILT_PREFIX_DIR = os.path.join(SCRIPT_DIR, 'built_prefixes')
 
 
 # ── helpers ────────────────────────────────────────────────────────
@@ -633,6 +639,7 @@ MONITOR_INTERVAL_MS = 5000
 
 
 class ProtonRunner(QWidget):
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle('Action Shark')
@@ -644,8 +651,16 @@ class ProtonRunner(QWidget):
         self.monitor_timer = QTimer(self)
         self.monitor_timer.timeout.connect(self._monitor_tick)
 
+        # fila thread-safe para comunicacao com a thread de instalacao
+        self._built_msg_queue = []
+        self._built_progress_queue = []
+        self._built_task_done = False
+        self._built_task_ok = False
+        self._built_poll = QTimer(self)
+        self._built_poll.timeout.connect(self._built_poll_tick)
+        self._built_poll.setInterval(100)
+
         self._build_ui()
-        self.log_widget.setVisible(False)
         self._refresh()
         self._refresh_trainer_list()
         QTimer.singleShot(150, self._wemod_refresh)
@@ -658,6 +673,7 @@ class ProtonRunner(QWidget):
         layout = QVBoxLayout(self)
 
         self.tabs = QTabWidget()
+        self.tabs.setMovable(True)
         self.tabs.currentChanged.connect(self._on_tab_changed)
         layout.addWidget(self.tabs)
 
@@ -666,13 +682,20 @@ class ProtonRunner(QWidget):
         self.tree.setHeaderLabels(['Jogo / Prefixo', 'Fonte', 'WINEPREFIX', 'AppID'])
         h = self.tree.header()
         h.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        h.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        h.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        h.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        h.setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)
+        h.setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)
+        h.setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)
         self.tree.itemSelectionChanged.connect(self._on_select)
         self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self._tree_context_menu)
-        self.tabs.addTab(self.tree, 'W/Process')
+
+        tab0_widget = QWidget()
+        tab0_layout = QVBoxLayout(tab0_widget)
+        tab0_layout.setContentsMargins(0, 0, 0, 0)
+        tab0_splitter = QSplitter(Qt.Orientation.Vertical)
+        tab0_splitter.addWidget(self.tree)
+        tab0_layout.addWidget(tab0_splitter)
+        self.tabs.addTab(tab0_widget, 'W/Process')
 
         # ── tab 1: auto monitor ──
         monitor_tab = QWidget()
@@ -699,7 +722,6 @@ class ProtonRunner(QWidget):
         ))
 
         self.trainer_list = QListWidget()
-        self.trainer_list.setMinimumHeight(150)
         tg.addWidget(self.trainer_list)
 
         self.trainer_list.itemChanged.connect(self._update_monitor_btn)
@@ -731,11 +753,12 @@ class ProtonRunner(QWidget):
         mg.addWidget(QLabel('Log do monitor:'))
         self.auto_log = QTextEdit()
         self.auto_log.setReadOnly(True)
-        self.auto_log.setMaximumHeight(120)
         mg.addWidget(self.auto_log)
 
-        mon_layout.addWidget(monitor_group)
-        mon_layout.addStretch()
+        mon_splitter = QSplitter(Qt.Orientation.Vertical)
+        mon_splitter.addWidget(trainers_group)
+        mon_splitter.addWidget(monitor_group)
+        mon_layout.addWidget(mon_splitter)
 
         self.tabs.addTab(monitor_tab, 'Auto')
 
@@ -777,7 +800,7 @@ class ProtonRunner(QWidget):
         self.log = QTextEdit()
         self.log.setReadOnly(True)
         log_ly.addWidget(self.log)
-        layout.addWidget(self.log_widget)
+        tab0_splitter.addWidget(self.log_widget)
 
     def _build_wemod_tab(self):
         tab = QWidget()
@@ -809,13 +832,27 @@ class ProtonRunner(QWidget):
         )
         h = self.wemod_tree.header()
         h.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        h.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        h.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        h.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        h.setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)
+        h.setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)
+        h.setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)
         self.wemod_tree.itemSelectionChanged.connect(self._wemod_selection_changed)
         self.wemod_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.wemod_tree.customContextMenuRequested.connect(self._wemod_tree_context_menu)
-        layout.addWidget(self.wemod_tree)
+
+        wemod_splitter = QSplitter(Qt.Orientation.Vertical)
+        wemod_splitter.addWidget(self.wemod_tree)
+
+        # log
+        log_container = QWidget()
+        log_ly = QVBoxLayout(log_container)
+        log_ly.setContentsMargins(0, 0, 0, 0)
+        log_ly.addWidget(QLabel('Log:'))
+        self.wemod_log = QTextEdit()
+        self.wemod_log.setReadOnly(True)
+        log_ly.addWidget(self.wemod_log)
+        wemod_splitter.addWidget(log_container)
+
+        layout.addWidget(wemod_splitter)
 
         # action buttons
         btn_row = QHBoxLayout()
@@ -823,6 +860,11 @@ class ProtonRunner(QWidget):
         self.wemod_install_btn.clicked.connect(self._wemod_install)
         self.wemod_install_btn.setEnabled(False)
         btn_row.addWidget(self.wemod_install_btn)
+
+        self.wemod_built_btn = QPushButton('Instalar Prefixo')
+        self.wemod_built_btn.clicked.connect(self._wemod_install_built)
+        self.wemod_built_btn.setEnabled(False)
+        btn_row.addWidget(self.wemod_built_btn)
 
         self.wemod_uninstall_btn = QPushButton('Desinstalar')
         self.wemod_uninstall_btn.clicked.connect(self._wemod_uninstall)
@@ -841,12 +883,6 @@ class ProtonRunner(QWidget):
 
         btn_row.addStretch()
         layout.addLayout(btn_row)
-
-        # log
-        layout.addWidget(QLabel('Log:'))
-        self.wemod_log = QTextEdit()
-        self.wemod_log.setReadOnly(True)
-        layout.addWidget(self.wemod_log)
 
         self.tabs.addTab(tab, 'WeMod')
 
@@ -977,6 +1013,104 @@ class ProtonRunner(QWidget):
 
         threading.Thread(target=task, daemon=True).start()
 
+    def _wemod_built_log_window(self, pfx: str):
+        win = QDialog(self)
+        win.setWindowTitle(f'Instalando Prefixo — {os.path.basename(pfx)}')
+        win.setModal(True)
+        win.setMinimumSize(750, 500)
+        layout = QVBoxLayout(win)
+
+        self._wemod_built_label = QLabel('Preparando…')
+        self._wemod_built_label.setWordWrap(True)
+        layout.addWidget(self._wemod_built_label)
+
+        self._wemod_built_bar = QProgressBar()
+        self._wemod_built_bar.setRange(0, 100)
+        self._wemod_built_bar.setValue(0)
+        self._wemod_built_bar.setTextVisible(True)
+        layout.addWidget(self._wemod_built_bar)
+
+        self._wemod_built_log = QTextEdit()
+        self._wemod_built_log.setReadOnly(True)
+        self._wemod_built_log.setStyleSheet(
+            'QTextEdit { background: #1e1e1e; color: #d4d4d4; '
+            'font-family: "JetBrains Mono", "Fira Code", "Consolas", monospace; '
+            'font-size: 12px; }')
+        layout.addWidget(self._wemod_built_log, stretch=1)
+
+        self._wemod_built_close_btn = QPushButton('Fechar')
+        self._wemod_built_close_btn.setVisible(False)
+        self._wemod_built_close_btn.clicked.connect(self._wemod_built_close)
+        layout.addWidget(self._wemod_built_close_btn,
+                         alignment=Qt.AlignmentFlag.AlignRight)
+        win.show()
+        QApplication.processEvents()
+        return win
+
+    def _wemod_install_built(self):
+        pfx = self._wemod_selected_prefix()
+        if not pfx:
+            return
+
+        self.wemod_built_btn.setEnabled(False)
+        self._wemod_built_progress = self._wemod_built_log_window(pfx)
+        self.setEnabled(False)
+
+        # limpa filas
+        self._built_msg_queue.clear()
+        self._built_progress_queue.clear()
+        self._built_task_done = False
+        self._built_poll.start()
+
+        def task():
+            try:
+                ok = wm.install_built_prefix(
+                    pfx,
+                    log_callback=lambda m: self._built_msg_queue.append(m),
+                    progress_callback=lambda s, p: self._built_progress_queue.append((s, p)),
+                )
+            except Exception as e:
+                self._built_msg_queue.append(f'ERRO: {e}')
+                ok = False
+            self._built_task_ok = ok
+            self._built_task_done = True
+
+        threading.Thread(target=task, daemon=True).start()
+
+    def _built_poll_tick(self):
+        while self._built_msg_queue and hasattr(self, '_wemod_built_log'):
+            msg = self._built_msg_queue.pop(0)
+            self._wemod_built_log.append(msg)
+            sb = self._wemod_built_log.verticalScrollBar()
+            sb.setValue(sb.maximum())
+
+        while self._built_progress_queue and hasattr(self, '_wemod_built_label'):
+            stage, pct = self._built_progress_queue.pop(0)
+            self._wemod_built_label.setText(stage)
+            self._wemod_built_bar.setValue(pct)
+
+        if self._built_task_done and hasattr(self, '_wemod_built_label'):
+            self._built_poll.stop()
+            self._built_task_done = False
+            ok = self._built_task_ok
+            self.setEnabled(True)
+            if ok:
+                self._wemod_built_label.setText('Concluido!')
+                self._wemod_built_bar.setValue(100)
+            else:
+                self._wemod_built_label.setText('Falhou — veja o log acima')
+            self._wemod_built_close_btn.setVisible(True)
+            self._wemod_refresh()
+            self._refresh()
+
+    def _wemod_built_close(self):
+        self._built_poll.stop()
+        if hasattr(self, '_wemod_built_progress') and self._wemod_built_progress:
+            self._wemod_built_progress.done(0)
+            self._wemod_built_progress.deleteLater()
+        self._wemod_refresh()
+        self._refresh()
+
     def _finish_install(self):
         self.setEnabled(True)
         if hasattr(self, '_wemod_progress') and self._wemod_progress:
@@ -1045,6 +1179,7 @@ class ProtonRunner(QWidget):
         running = wm.is_wemod_running(pfx)
         self.wemod_install_btn.setEnabled(not installed and not running)
         self.wemod_install_btn.setText('Instalar')
+        self.wemod_built_btn.setEnabled(not installed and not running)
         self.wemod_uninstall_btn.setEnabled(installed and not running)
         self.wemod_start_btn.setEnabled(installed and not running)
         self.wemod_stop_btn.setEnabled(installed and running)
@@ -1055,7 +1190,6 @@ class ProtonRunner(QWidget):
         hide = idx in (1, 2)
         self.exe_row_widget.setVisible(not hide)
         self.actions_widget.setVisible(not hide)
-        self.log_widget.setVisible(False)
 
     # ── trainers folder ────────────────────────────────────────────
 
@@ -1288,6 +1422,11 @@ class ProtonRunner(QWidget):
         if has_pid:
             act_kill = menu.addAction('Matar Processo')
         menu.addSeparator()
+        save_menu = menu.addMenu('Salvar como')
+        act_backup = save_menu.addAction('Backup')
+        act_standard = save_menu.addAction('Prefixo Padrão')
+        act_restore = menu.addAction('Restaurar Backup')
+        menu.addSeparator()
         act_hide = menu.addAction('Ocultar Prefixo')
         act_remove = menu.addAction('Remover Prefixo')
         action = menu.exec(self.tree.viewport().mapToGlobal(pos))
@@ -1300,6 +1439,12 @@ class ProtonRunner(QWidget):
         elif has_pid and action == act_kill:
             self._kill_prefix_processes(pfx)
             self._refresh()
+        elif action == act_backup:
+            self._backup_prefix(pfx, data.get('source') == 'Não-Steam')
+        elif action == act_standard:
+            self._save_as_standard_prefix(pfx, data.get('source') == 'Não-Steam')
+        elif action == act_restore:
+            self._restore_backup(pfx, data.get('source') == 'Não-Steam')
         elif action == act_hide:
             self._hide_prefix(pfx)
         elif action == act_remove:
@@ -1473,16 +1618,16 @@ class ProtonRunner(QWidget):
         if not os.path.isdir(pfx):
             QMessageBox.warning(self, 'Aviso', 'Prefixo não existe no disco.')
             return
+        delete_target = os.path.dirname(pfx) if not is_custom else pfx
         reply = QMessageBox.question(
             self, 'Confirmar',
-            f'Tem certeza que deseja apagar permanentemente o prefixo?\n{pfx}',
+            f'Tem certeza que deseja apagar permanentemente a pasta do prefixo?\n{delete_target}',
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply != QMessageBox.StandardButton.Yes:
             return
         self._kill_prefix_processes(pfx)
-        import subprocess
-        result = subprocess.run(['rm', '-rf', pfx], capture_output=True, text=True)
+        result = subprocess.run(['rm', '-rf', delete_target], capture_output=True, text=True)
         if result.returncode != 0:
             QMessageBox.critical(self, 'Erro', f'Não foi possível apagar o prefixo:\n{result.stderr}')
             return
@@ -1492,7 +1637,206 @@ class ProtonRunner(QWidget):
             save_config(cfg)
         self._refresh()
         self._wemod_refresh()
-        self._log(f'Prefixo apagado do disco: {pfx}')
+        self._log(f'Prefixo apagado do disco: {delete_target}')
+
+    def _backup_prefix(self, pfx, is_custom=False):
+        source = os.path.dirname(pfx) if not is_custom else pfx
+        if not os.path.isdir(source):
+            QMessageBox.warning(self, 'Aviso', 'Pasta do prefixo não encontrada.')
+            return
+        default_name = os.path.basename(source)
+        name, ok = QInputDialog.getText(
+            self, 'Salvar Backup',
+            'Nome do backup:', text=default_name,
+        )
+        if not ok or not name.strip():
+            return
+        name = name.strip()
+        dst = os.path.join(source, f'{name}.zip')
+        if os.path.exists(dst):
+            reply = QMessageBox.question(
+                self, 'Sobrescrever',
+                f'O arquivo já existe:\n{dst}\nSobrescrever?',
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+
+        self._wemod_built_progress = self._wemod_built_log_window(
+            f'Backup — {name}')
+        self.setEnabled(False)
+        self._built_msg_queue.clear()
+        self._built_progress_queue.clear()
+        self._built_task_done = False
+        self._built_poll.start()
+
+        def task():
+            try:
+                self._built_msg_queue.append(f'Salvando backup em: {dst}')
+                self._built_progress_queue.append(('Compactando arquivos...', 0))
+                skipped = 0
+                file_count = sum(
+                    len(f) for _, _, f in os.walk(source, followlinks=False))
+                with zipfile.ZipFile(dst, 'w', zipfile.ZIP_DEFLATED) as zf:
+                    current = 0
+                    for root, dirs, files in os.walk(source, followlinks=False):
+                        for f in files:
+                            fpath = os.path.join(root, f)
+                            if os.path.islink(fpath):
+                                skipped += 1
+                                continue
+                            arcname = os.path.relpath(fpath, source)
+                            try:
+                                zf.write(fpath, arcname)
+                                current += 1
+                            except (PermissionError, OSError):
+                                skipped += 1
+                                continue
+                            pct = int(80 * current / file_count) if file_count else 80
+                            self._built_progress_queue.append(
+                                (f'Compactando... ({current}/{file_count})', pct))
+                if skipped:
+                    self._built_msg_queue.append(
+                        f'{skipped} arquivo(s) especial(is) ignorado(s)')
+                self._built_progress_queue.append(('Concluido!', 100))
+                self._built_msg_queue.append(f'Backup salvo: {dst}')
+                self._built_task_ok = True
+            except Exception as e:
+                self._built_msg_queue.append(f'ERRO: {e}')
+                self._built_task_ok = False
+            self._built_task_done = True
+
+        threading.Thread(target=task, daemon=True).start()
+
+    def _save_as_standard_prefix(self, pfx, is_custom=False):
+        source = os.path.dirname(pfx) if not is_custom else pfx
+        if not os.path.isdir(source):
+            QMessageBox.warning(self, 'Aviso', 'Pasta do prefixo não encontrada.')
+            return
+        default_name = os.path.basename(source)
+        name, ok = QInputDialog.getText(
+            self, 'Salvar como Prefixo Padrão',
+            'Nome do prefixo padrão:', text=default_name,
+        )
+        if not ok or not name.strip():
+            return
+        name = name.strip()
+        dst = os.path.join(BUILT_PREFIX_DIR, f'{name}.zip')
+        if os.path.exists(dst):
+            reply = QMessageBox.question(
+                self, 'Sobrescrever',
+                f'O arquivo já existe:\n{dst}\nSobrescrever?',
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+
+        self._wemod_built_progress = self._wemod_built_log_window(
+            f'Prefixo Padrao — {name}')
+        self.setEnabled(False)
+        self._built_msg_queue.clear()
+        self._built_progress_queue.clear()
+        self._built_task_done = False
+        self._built_poll.start()
+
+        def task():
+            try:
+                self._built_msg_queue.append(
+                    f'Salvando prefixo padrao em: {dst}')
+                self._built_progress_queue.append(('Compactando arquivos...', 0))
+                os.makedirs(BUILT_PREFIX_DIR, exist_ok=True)
+                skipped = 0
+                file_count = sum(
+                    len(f) for _, _, f in os.walk(source, followlinks=False))
+                with zipfile.ZipFile(dst, 'w', zipfile.ZIP_DEFLATED) as zf:
+                    current = 0
+                    for root, dirs, files in os.walk(source, followlinks=False):
+                        for f in files:
+                            fpath = os.path.join(root, f)
+                            if os.path.islink(fpath):
+                                skipped += 1
+                                continue
+                            arcname = os.path.relpath(fpath, source)
+                            try:
+                                zf.write(fpath, arcname)
+                                current += 1
+                            except (PermissionError, OSError):
+                                skipped += 1
+                                continue
+                            pct = int(80 * current / file_count) if file_count else 80
+                            self._built_progress_queue.append(
+                                (f'Compactando... ({current}/{file_count})', pct))
+                if skipped:
+                    self._built_msg_queue.append(
+                        f'{skipped} arquivo(s) especial(is) ignorado(s)')
+                self._built_progress_queue.append(('Concluido!', 100))
+                self._built_msg_queue.append(f'Prefixo padrao salvo: {dst}')
+                self._built_task_ok = True
+            except Exception as e:
+                self._built_msg_queue.append(f'ERRO: {e}')
+                self._built_task_ok = False
+            self._built_task_done = True
+
+        threading.Thread(target=task, daemon=True).start()
+
+    def _restore_backup(self, pfx, is_custom=False):
+        source = os.path.dirname(pfx) if not is_custom else pfx
+        if not os.path.isdir(source):
+            QMessageBox.warning(self, 'Aviso', 'Pasta do prefixo não encontrada.')
+            return
+        backups = sorted(
+            f for f in os.listdir(source)
+            if f.endswith('.zip') and os.path.isfile(os.path.join(source, f))
+        )
+        if not backups:
+            QMessageBox.information(self, 'Backup', 'Nenhum backup encontrado neste prefixo.')
+            return
+        if len(backups) == 1:
+            selected = backups[0]
+        else:
+            selected, ok = QInputDialog.getItem(
+                self, 'Restaurar Backup',
+                'Selecione o backup:', backups, 0, False,
+            )
+            if not ok:
+                return
+        backup_path = os.path.join(source, selected)
+        reply = QMessageBox.question(
+            self, 'Confirmar',
+            f'Restaurar backup?\n{selected}\n\n'
+            'Os arquivos atuais do prefixo serao substituidos.',
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        self._wemod_built_progress = self._wemod_built_log_window(
+            f'Restaurar — {selected}')
+        self.setEnabled(False)
+        self._built_msg_queue.clear()
+        self._built_progress_queue.clear()
+        self._built_task_done = False
+        self._built_poll.start()
+
+        def task():
+            try:
+                self._kill_prefix_processes(pfx)
+                self._built_msg_queue.append(f'Restaurando backup: {selected}')
+                self._built_progress_queue.append(('Removendo prefixo atual...', 10))
+                if os.path.isdir(pfx):
+                    shutil.rmtree(pfx)
+                self._built_progress_queue.append(('Extraindo backup...', 30))
+                with zipfile.ZipFile(backup_path, 'r') as zf:
+                    zf.extractall(source)
+                self._built_progress_queue.append(('Concluido!', 100))
+                self._built_msg_queue.append('Backup restaurado com sucesso!')
+                self._built_task_ok = True
+            except Exception as e:
+                self._built_msg_queue.append(f'ERRO: {e}')
+                self._built_task_ok = False
+            self._built_task_done = True
+
+        threading.Thread(target=task, daemon=True).start()
 
     def _log(self, msg):
         self.log.append(msg)

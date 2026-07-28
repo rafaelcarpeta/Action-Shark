@@ -142,3 +142,7 @@ cython_debug/
 # OS metadata
 .DS_Store
 Thumbs.db
+
+# Prefix data
+wemod_prefixes/
+built_prefixes/
