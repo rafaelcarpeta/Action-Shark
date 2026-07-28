@@ -973,6 +973,13 @@ class ProtonRunner(QWidget):
                     log_callback=lambda m: self._built_msg_queue.append(m),
                     progress_callback=lambda s, p: self._built_progress_queue.append((s, p)),
                 )
+                if ok:
+                    self._built_msg_queue.append('Configurando symlinks do WeMod...')
+                    wm.install_wemod_prefix(
+                        pfx,
+                        log_callback=lambda m: self._built_msg_queue.append(m),
+                        progress_callback=lambda s, p: self._built_progress_queue.append((s, p)),
+                    )
             except Exception as e:
                 self._built_msg_queue.append(f'ERRO: {e}')
                 ok = False
