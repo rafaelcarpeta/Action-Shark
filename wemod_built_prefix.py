@@ -30,8 +30,8 @@ WEMOD_PREFIXES_DIR = os.path.join(SCRIPT_DIR, 'wemod_prefixes')
 
 BUILT_PREFIX_CACHE = os.path.join(WEMOD_DATA_DIR, 'prefix_cache')
 BUILT_PREFIX_DIR = os.path.expanduser('~/.config/trainer_manager/built_prefixes')
-BUILT_PREFIX_REPO_USER = 'DeckCheatz'
-BUILT_PREFIX_REPO_NAME = 'BuiltPrefixes-dev'
+BUILT_PREFIX_REPO_USER = 'rafaelcarpeta'
+BUILT_PREFIX_REPO_NAME = 'Action-Shark'
 
 _DOWNLOAD_UA = ('Mozilla/5.0 (X11; Linux x86_64; rv:135.0) '
                 'Gecko/20100101 Firefox/135.0')
