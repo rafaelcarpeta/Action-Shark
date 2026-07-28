@@ -820,10 +820,6 @@ class ProtonRunner(QWidget):
 
         # action buttons
         btn_row = QHBoxLayout()
-        self.wemod_install_btn = QPushButton('Instalar')
-        self.wemod_install_btn.clicked.connect(self._wemod_install)
-        self.wemod_install_btn.setEnabled(False)
-        btn_row.addWidget(self.wemod_install_btn)
 
         self.wemod_built_btn = QPushButton('Instalar Prefixo')
         self.wemod_built_btn.clicked.connect(self._wemod_install_built)
@@ -920,62 +916,6 @@ class ProtonRunner(QWidget):
         if not sel:
             return None
         return sel[0].data(0, Qt.ItemDataRole.UserRole).get('wineprefix', '')
-
-    def _wemod_install(self):
-        pfx = self._wemod_selected_prefix()
-        if not pfx:
-            return
-        if not wm.is_wemod_downloaded():
-            try:
-                wm.download_wemod()
-            except Exception as e:
-                QMessageBox.critical(self, 'Erro', f'Falha ao baixar WeMod.exe:\n{e}')
-                return
-
-        self.wemod_install_btn.setEnabled(False)
-        self._wemod_log(f'Instalando WeMod em {pfx}...')
-        self._wemod_log('')
-
-        # dialog modal sem botão de fechar (trava closeEvent)
-        class _InstallDialog(QDialog):
-            def closeEvent(self, event):
-                event.ignore()
-        self._wemod_progress = _InstallDialog(self)
-        self._wemod_progress.setWindowTitle('Instalando WeMod')
-        self._wemod_progress.setModal(True)
-        self._wemod_progress.setMinimumWidth(400)
-        layout = QVBoxLayout(self._wemod_progress)
-        self._wemod_progress_label = QLabel('Preparando…')
-        self._wemod_progress_label.setWordWrap(True)
-        layout.addWidget(self._wemod_progress_label)
-        self._wemod_progress.show()
-        QApplication.processEvents()
-
-        # desabilita input da janela principal
-        self.setEnabled(False)
-
-        def gui_log(msg):
-            QTimer.singleShot(0, lambda: self._wemod_log(msg))
-
-        def gui_progress(stage, pct):
-            def _update():
-                self._wemod_progress_label.setText(stage)
-                QApplication.processEvents()
-            QTimer.singleShot(0, _update)
-
-        def task():
-            try:
-                ok = wm.install_wemod_prefix(
-                    pfx, log_callback=gui_log, progress_callback=gui_progress
-                )
-                if not ok:
-                    gui_log('ERRO: instalacao falhou')
-            except Exception as e:
-                gui_log(f'ERRO: {e}')
-            finally:
-                QTimer.singleShot(0, self._finish_install)
-
-        threading.Thread(target=task, daemon=True).start()
 
     def _wemod_built_log_window(self, pfx: str):
         win = QDialog(self)
@@ -1134,15 +1074,13 @@ class ProtonRunner(QWidget):
     def _wemod_selection_changed(self):
         pfx = self._wemod_selected_prefix()
         if not pfx:
-            self.wemod_install_btn.setEnabled(False)
             self.wemod_uninstall_btn.setEnabled(False)
             self.wemod_start_btn.setEnabled(False)
             self.wemod_stop_btn.setEnabled(False)
+            self.wemod_built_btn.setEnabled(False)
             return
         installed = wm.is_wemod_installed(pfx)
         running = wm.is_wemod_running(pfx)
-        self.wemod_install_btn.setEnabled(not installed and not running)
-        self.wemod_install_btn.setText('Instalar')
         self.wemod_built_btn.setEnabled(not installed and not running)
         self.wemod_uninstall_btn.setEnabled(installed and not running)
         self.wemod_start_btn.setEnabled(installed and not running)
