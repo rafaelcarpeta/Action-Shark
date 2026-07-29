@@ -1082,6 +1082,9 @@ def launch_wemod(wineprefix: str) -> Optional[int]:
         '--in-process-gpu',
         '--disable-gpu-compositing',
         '--use-gl=swiftshader',
+        '--disable-software-rasterizer',
+        '--no-zygote',
+        '--disable-breakpad',
     ]
 
     _fix_wemod_window_position(wineprefix)

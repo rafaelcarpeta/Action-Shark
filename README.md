@@ -143,6 +143,8 @@ A integração utiliza um **prefixo Wine/Proton pré-configurado** (disponível 
 
 > **Nota:** O WeMod requer uma conta gratuita ou **Pro** (paga) para funcionar. Crie uma em [wemod.com](https://www.wemod.com).
 
+> **Nota sobre merge em prefixes com launchers secundários (EA App, Ubisoft Connect, etc.):** Ao mesclar o prefixo WeMod em um prefixo que já possui launchers como EA App, o WeMod funcionará corretamente, mas o laucher secundário pode precisar ser reparado (re-executar o installer do laucher). Recomenda-se fazer backup do prefixo antes do merge.
+
 ## Licença
 
 Este projeto está licenciado sob uma licença **Custom Não-Comercial** (baseada no MIT).

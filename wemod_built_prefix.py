@@ -140,10 +140,45 @@ def _bp_get_github_releases(repo_name: str) -> list:
     url = f'https://api.github.com/repos/{repo_name}/releases'
     try:
         resp = _http_get(url)
-        return json.loads(resp.read().decode('utf-8'))
+        data = json.loads(resp.read().decode('utf-8'))
+        if isinstance(data, list) and len(data) > 0:
+            return data
     except Exception as e:
-        _log(f'Falha ao buscar releases do GitHub ({repo_name}): {e}')
-        return []
+        _log(f'Falha ao buscar releases ({repo_name}): {e}')
+
+    # Fallback: tenta /releases/latest
+    try:
+        url_latest = f'https://api.github.com/repos/{repo_name}/releases/latest'
+        resp = _http_get(url_latest)
+        data = json.loads(resp.read().decode('utf-8'))
+        if isinstance(data, dict) and 'tag_name' in data:
+            _log(f'Release latest encontrada: {data["tag_name"]}')
+            return [data]
+    except Exception as e:
+        _log(f'Falha ao buscar latest release ({repo_name}): {e}')
+
+    # Fallback: tenta listar tags (requer menos permissoes)
+    try:
+        url_tags = f'https://api.github.com/repos/{repo_name}/tags'
+        resp = _http_get(url_tags)
+        data = json.loads(resp.read().decode('utf-8'))
+        if isinstance(data, list) and len(data) > 0:
+            _log(f'{len(data)} tag(s) encontrada(s), convertendo para releases...')
+            releases = []
+            for tag in data:
+                tag_name = tag.get('name', '')
+                releases.append({
+                    'tag_name': tag_name,
+                    'assets': [{
+                        'browser_download_url':
+                            f'https://github.com/{repo_name}/releases/download/{tag_name}/wemod_prefix.zip'
+                    }],
+                })
+            return releases
+    except Exception as e:
+        _log(f'Falha ao buscar tags ({repo_name}): {e}')
+
+    return []
 
 
 def _bp_find_closest_compatible_release(releases, current_version_parts) -> tuple:
@@ -303,7 +338,17 @@ def download_built_prefix(wineprefix: str,
     closest_version, url = _bp_find_closest_compatible_release(
         releases, current_version_parts)
     if not closest_version or not url:
-        log_callback(f'Nenhuma release compativel em {repo_concat}')
+        log_callback(f'Nenhuma release compativel (PfxVer) em {repo_concat}')
+        log_callback('Tentando primeira release com assets...')
+        for rel in releases:
+            assets = rel.get('assets', [])
+            if assets:
+                url = assets[0]['browser_download_url']
+                closest_version = [0, 0]
+                log_callback(f'Usando: {rel.get("tag_name", "?")}')
+                break
+    if not closest_version or not url:
+        log_callback('Nenhuma release com assets encontrada')
         return False
 
     log_callback(f'Release: PfxVer{closest_version[0]}.{closest_version[1]}')
@@ -462,6 +507,121 @@ def _bp_scan_zip_prefixes(scan_folder: str, current_version_parts: list,
     return closest_version, closest_zip
 
 
+def _is_continuation(line: str) -> bool:
+    """True se a linha é continuação de um valor multi-linha (não é novo valor nem seção)."""
+    stripped = line.strip()
+    return bool(stripped) and not stripped.startswith('"') and not stripped.startswith('[')
+
+
+def _merge_reg_value_lines(src_lines: list, dst_lines: list, src_override: bool = False) -> list:
+    """Merge source value lines into destination.
+    Se src_override=True: valores do source sobrescrevem os do destino
+      (último valor com mesmo nome vence no Wine registry).
+    Se src_override=False: só valores NOVOS do source são adicionados.
+    Retorna a lista mesclada de linhas."""
+    dst_names = set()
+    merged = []
+    i = 0
+    while i < len(dst_lines):
+        line = dst_lines[i]
+        merged.append(line)
+        m = re.match(r'^("(?:[^"]+)")=', line)
+        if m:
+            dst_names.add(m.group(1))
+            i += 1
+            while i < len(dst_lines) and _is_continuation(dst_lines[i]):
+                merged.append(dst_lines[i])
+                i += 1
+        else:
+            i += 1
+
+    i = 0
+    while i < len(src_lines):
+        line = src_lines[i]
+        m = re.match(r'^("(?:[^"]+)")=', line)
+        if m:
+            is_dup = m.group(1) in dst_names
+            if src_override or not is_dup:
+                merged.append(line)
+                i += 1
+                while i < len(src_lines) and _is_continuation(src_lines[i]):
+                    merged.append(src_lines[i])
+                    i += 1
+            else:
+                i += 1
+                while i < len(src_lines) and _is_continuation(src_lines[i]):
+                    i += 1
+        else:
+            i += 1
+
+    return merged
+
+
+def _merge_reg_file(src_path: str, dst_path: str, log_callback=None):
+    """Merge source Wine registry into destination at chave/valor.
+    Chaves que só existem em source são adicionadas.
+    Chaves existentes em ambos: valores de destination são preservados,
+    valores novos de source são adicionados."""
+    if log_callback is None:
+        log_callback = _log
+
+    def parse_reg(path):
+        with open(path, 'r', errors='replace') as f:
+            content = f.read()
+        lines = content.splitlines(keepends=True)
+
+        meta = []
+        sections = {}
+        current_key = None
+        buf = []
+
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith('['):
+                m = re.match(r'^(\[.+\])(?:\s|$)', stripped)
+                if m:
+                    if current_key is not None:
+                        sections[current_key] = buf
+                    current_key = m.group(1)
+                    buf = [line]
+                    continue
+            if current_key is not None:
+                buf.append(line)
+            else:
+                meta.append(line)
+
+        if current_key is not None:
+            sections[current_key] = buf
+        return meta, sections
+
+    if not os.path.isfile(src_path):
+        return
+    if not os.path.isfile(dst_path):
+        shutil.copy2(src_path, dst_path)
+        log_callback(f'  {os.path.basename(src_path)} copiado (destino nao existia)')
+        return
+
+    src_meta, src_sections = parse_reg(src_path)
+    dst_meta, dst_sections = parse_reg(dst_path)
+
+    for key, src_lines in src_sections.items():
+        if key not in dst_sections:
+            dst_sections[key] = src_lines[:]
+        else:
+            dst_sections[key] = _merge_reg_value_lines(
+                src_lines, dst_sections[key], src_override=True)
+
+    merged = []
+    for line in dst_meta:
+        merged.append(line)
+    for key in sorted(dst_sections.keys()):
+        merged.extend(dst_sections[key])
+
+    with open(dst_path, 'w') as f:
+        f.writelines(merged)
+    log_callback(f'  {os.path.basename(src_path)} mesclado ({len(src_sections)} secoes source, {len(dst_sections)} secoes destino)')
+
+
 def merge_built_prefix(wineprefix: str,
                        source_compatdata: str,
                        log_callback=None,
@@ -511,9 +671,22 @@ def merge_built_prefix(wineprefix: str,
         if item.is_file():
             all_files.append(item)
 
+    _REG_FILES = {'pfx/system.reg', 'pfx/user.reg', 'pfx/userdef.reg'}
+    _FORCE_OVERWRITE_PREFIXES = (
+        'pfx/drive_c/windows/Microsoft.NET',
+        'pfx/drive_c/windows/system32/mscore',
+        'pfx/drive_c/windows/syswow64/mscore',
+        'pfx/drive_c/windows/system32/clr',
+        'pfx/drive_c/windows/syswow64/clr',
+    )
+
     copy_list = []
+    reg_files = []
     for f in all_files:
         rfile = os.path.relpath(str(f), source_compatdata)
+        if rfile in _REG_FILES:
+            reg_files.append(rfile)
+            continue
         use = True
         for i in ignore:
             if os.path.commonprefix([rfile, i]) == i:
@@ -528,20 +701,33 @@ def merge_built_prefix(wineprefix: str,
             copy_list.append(rfile)
 
     total = len(copy_list)
-    if total == 0:
+    if total == 0 and not reg_files:
         log_callback('Nenhum arquivo para copiar')
         return False
 
     for i, rfile in enumerate(copy_list):
         src = os.path.join(source_compatdata, rfile)
         dst = os.path.join(dest_compatdata, rfile)
+        force = rfile.startswith(_FORCE_OVERWRITE_PREFIXES)
         try:
             os.makedirs(os.path.dirname(dst), exist_ok=True)
+            if not force and os.path.lexists(dst):
+                continue
+            if os.path.lexists(dst):
+                os.unlink(dst)
             shutil.copy2(src, dst, follow_symlinks=False)
-        except PermissionError:
+        except OSError:
             pass
-        pct = int(80 * (i + 1) / total)
-        progress_callback(f'Copiando... ({i+1}/{total})', pct)
+        pct = int(80 * (i + 1) / (total or 1))
+        progress_callback(f'Copiando... ({i+1}/{max(total,1)})', pct)
+
+    if reg_files:
+        log_callback('Fazendo merge dos registros Wine...')
+        progress_callback('Merge dos registros...', 80)
+        for rfile in reg_files:
+            src = os.path.join(source_compatdata, rfile)
+            dst = os.path.join(dest_compatdata, rfile)
+            _merge_reg_file(src, dst, log_callback)
 
     log_callback('Sincronizando login...')
     sync_wemod_login(wineprefix)
@@ -588,10 +774,19 @@ def install_built_prefix(wineprefix: str,
         log_callback('Buscando prefixos padrao salvos...')
         closest_version, closest_zip = _bp_scan_zip_prefixes(
             BUILT_PREFIX_DIR, current_version_parts, log_callback)
+        if not closest_zip:
+            log_callback('Nenhum zip compativel, tentando qualquer zip disponivel...')
+            for fname in sorted(os.listdir(BUILT_PREFIX_DIR), reverse=True):
+                if not fname.endswith('.zip'):
+                    continue
+                closest_zip = os.path.join(BUILT_PREFIX_DIR, fname)
+                log_callback(f'Tentando {fname}...')
+                break
+
         if closest_zip:
             log_callback(f'Prefixo padrao encontrado: '
-                         f'{os.path.basename(closest_zip)} '
-                         f'(v{closest_version[0]}.{closest_version[1]})')
+                         f'{os.path.basename(closest_zip)}'
+                         f'{"" if not closest_version else f" (v{closest_version[0]}.{closest_version[1]})"}')
             tmp_extract = os.path.join(BUILT_PREFIX_DIR,
                                        f'_merge_{os.path.basename(closest_zip)[:-4]}')
             os.makedirs(tmp_extract, exist_ok=True)

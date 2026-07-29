@@ -1179,6 +1179,7 @@ class ProtonRunner(QWidget):
                 if d and d.get('wineprefix') == sel_pfx:
                     self.tree.setCurrentItem(item)
                     break
+        self._wemod_refresh()
 
     def _load_tree(self):
         self.tree.clear()
