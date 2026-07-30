@@ -40,6 +40,7 @@ from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QIcon
 
 import wemod_manager as wm
+from cheat_engine_tab import CheatEngineTab
 
 
 CONFIG_PATH = os.path.expanduser('~/.config/trainer_manager/config.json')
@@ -845,6 +846,9 @@ class ProtonRunner(QWidget):
         layout.addLayout(btn_row)
 
         self.tabs.addTab(tab, 'WeMod')
+
+        self.ce_tab = CheatEngineTab()
+        self.tabs.addTab(self.ce_tab, 'Cheat Engine')
 
     def _wemod_log(self, msg):
         self.wemod_log.append(msg)
