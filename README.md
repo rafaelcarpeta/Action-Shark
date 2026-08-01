@@ -15,13 +15,14 @@ O programa varre o sistema em busca de:
 3. **Prefixes de launchers** lendo arquivos de configuração e pastas conhecidas
 4. **Prefixes customizados** adicionados manualmente pelo usuário
 
-Com um prefixo selecionado, você pode executar qualquer `.exe` (trainer) dentro dele com o Wine correto. A aba **Trainers** permite selecionar um prefixo e um trainer para executar diretamente. A guia **WeMod** baixa, instala e gerencia o WeMod no prefixo desejado.
+Com um prefixo selecionado, você pode executar qualquer `.exe` (trainer) dentro dele com o Wine correto. A aba **Trainer/CE** permite selecionar um prefixo e executar um trainer ou o Cheat Engine (versão Windows) diretamente. A guia **WeMod** baixa, instala e gerencia o WeMod no prefixo desejado.
 
 ## Funcionalidades
 
 - **Detecção automática** de jogos e prefixes Steam, Lutris, Bottles, Heroic, PortProton, PlayOnLinux, Hydra
 - **Execução de trainers** no Wine/Proton correto (detecta o binário wine automaticamente)
-- **Seleção de prefixo**: selecione um prefixo e um trainer para executar diretamente na aba Trainers
+- **Seleção de prefixo**: selecione um prefixo e um trainer para executar diretamente na aba Trainer/CE
+- **Cheat Engine integrado**: defina o caminho do executável do Cheat Engine (Windows) e execute-o no prefixo selecionado
 - **Backup e restore**: salve backups de prefixes e restaure quando necessário
 - **Salvar como Prefixo Padrão**: exporte um prefixo como zip em `~/.config/trainer_manager/built_prefixes/`
 - **Merge de prefixes**: instale um prefixo padrão sobre um prefixo existente, preservando dados

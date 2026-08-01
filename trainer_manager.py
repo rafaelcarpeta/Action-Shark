@@ -40,7 +40,6 @@ from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QIcon
 
 import wemod_manager as wm
-from cheat_engine_tab import CheatEngineTab
 
 
 CONFIG_PATH = os.path.expanduser('~/.config/trainer_manager/config.json')
@@ -719,7 +718,7 @@ class ProtonRunner(QWidget):
 
         self.tabs.addTab(tab0_widget, 'Wine')
 
-        # ── tab 1: trainers ──
+        # ── tab 1: trainers + CE ──
         monitor_tab = QWidget()
         mon_layout = QVBoxLayout(monitor_tab)
 
@@ -756,7 +755,27 @@ class ProtonRunner(QWidget):
 
         mon_layout.addWidget(trainers_group)
 
-        self.tabs.addTab(monitor_tab, 'Trainers')
+        ce_group = QGroupBox('Cheat Engine')
+        cg = QVBoxLayout(ce_group)
+
+        ce_row = QHBoxLayout()
+        self.ce_path = QLineEdit()
+        self.ce_path.setText(self.config.get('ce_path', ''))
+        self.ce_path.setPlaceholderText('cheatengine-x86_64-SSE4-AVX2.exe')
+        self.ce_path.textChanged.connect(self._on_ce_path_changed)
+        ce_row.addWidget(self.ce_path, 1)
+        btn_ce_browse = QPushButton('Procurar…')
+        btn_ce_browse.clicked.connect(self._browse_ce)
+        ce_row.addWidget(btn_ce_browse)
+        cg.addLayout(ce_row)
+
+        btn_run_ce = QPushButton('Iniciar Cheat Engine no prefixo selecionado')
+        btn_run_ce.clicked.connect(self._run_ce)
+        cg.addWidget(btn_run_ce)
+
+        mon_layout.addWidget(ce_group)
+
+        self.tabs.addTab(monitor_tab, 'Trainer/CE')
 
         self._build_wemod_tab()
 
@@ -846,9 +865,6 @@ class ProtonRunner(QWidget):
         layout.addLayout(btn_row)
 
         self.tabs.addTab(tab, 'WeMod')
-
-        self.ce_tab = CheatEngineTab()
-        self.tabs.addTab(self.ce_tab, 'Cheat Engine')
 
     def _wemod_log(self, msg):
         self.wemod_log.append(msg)
@@ -1163,6 +1179,55 @@ class ProtonRunner(QWidget):
 
         logfile = run_exe_in_prefix(wine_bin, exe, pfx)
         self._log(f'OK — trainer enviado para execução (log: {logfile})')
+
+    # ── cheat engine ──────────────────────────────────────────────
+
+    def _on_ce_path_changed(self, text):
+        self.config['ce_path'] = text
+        save_config(self.config)
+
+    def _browse_ce(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, 'Selecionar executável do Cheat Engine',
+            os.path.dirname(self.ce_path.text()) or os.path.expanduser('~'),
+            'Executáveis (*.exe);;Todos os arquivos (*)',
+        )
+        if path:
+            self.ce_path.setText(path)
+
+    def _run_ce(self):
+        idx = self.trainer_prefix_combo.currentIndex()
+        if idx < 0:
+            QMessageBox.information(self, 'Aviso', 'Selecione um prefixo na lista.')
+            return
+        data = self.trainer_prefix_combo.itemData(idx)
+        pfx = data.get('wineprefix', '')
+        if not pfx:
+            QMessageBox.warning(self, 'Aviso', 'WINEPREFIX não encontrado.')
+            return
+
+        ce_exe = self.ce_path.text().strip()
+        if not ce_exe:
+            QMessageBox.information(
+                self, 'Aviso', 'Configure o caminho do executável do Cheat Engine.')
+            return
+        if not os.path.isfile(ce_exe):
+            QMessageBox.warning(
+                self, 'Aviso', 'Executável do Cheat Engine não encontrado.')
+            return
+
+        pid = data.get('pid')
+        wine_bin = (
+            _find_wine_bin_for_pid(pid)
+            or find_wine_binary(pfx)
+        ) if pid else find_wine_binary(pfx)
+
+        self._log(f'CE:       {os.path.basename(ce_exe)}')
+        self._log(f'Prefix:   {pfx}')
+        self._log(f'Wine:     {wine_bin}')
+
+        logfile = run_exe_in_prefix(wine_bin, ce_exe, pfx)
+        self._log(f'OK — Cheat Engine enviado para execução (log: {logfile})')
 
     # ── data loading ───────────────────────────────────────────────
 
