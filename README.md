@@ -1,10 +1,10 @@
-# Action Shark v1.1
+# Action Shark v1.2
 
 Gerenciador gráfico (PyQt6) para executar **trainers** (aplicativos que modificam o comportamento de jogos em tempo de execução, como vidas infinitas, dinheiro infinito, etc.) no Linux usando prefixes Wine/Proton. Detecta automaticamente jogos Steam e de vários launchers, além de integrar o **WeMod** completamente (download, instalação via prefixo pré-configurado, launch e stop).
 
 ![Action Shark](images/Screenshot_20260728_143446.png)
 
-> **Aviso:** Os arquivos anexados nas releases (ex.: `ProtonCOS11.zip`) são **prefixos Wine/Proton pré-configurados** para uso com o Action Shark. **Não são o aplicativo em si.** O app deve ser clonado ou baixado separadamente do repositório.
+> **Aviso:** Os arquivos anexados nas releases (ex.: `GE-Proton10.1.zip`) são **prefixos Wine/Proton pré-configurados** para uso com o Action Shark. **Não são o aplicativo em si.** O app deve ser clonado ou baixado separadamente do repositório.
 
 ## Como funciona
 

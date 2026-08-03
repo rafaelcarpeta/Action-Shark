@@ -10,6 +10,7 @@ import zipfile
 from pathlib import Path
 
 import threading
+from collections import deque
 
 from PyQt6.QtWidgets import (
     QApplication,
@@ -641,15 +642,15 @@ class ProtonRunner(QWidget):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle('Action Shark v1.1')
+        self.setWindowTitle('Action Shark v1.2')
         self.setWindowIcon(QIcon.fromTheme('applications-games'))
         self.setMinimumSize(800, 680)
 
         self.config = load_config()
 
         # fila thread-safe para comunicacao com a thread de instalacao
-        self._built_msg_queue = []
-        self._built_progress_queue = []
+        self._built_msg_queue = deque()
+        self._built_progress_queue = deque()
         self._built_task_done = False
         self._built_task_ok = False
         self._built_poll = QTimer(self)
@@ -1010,13 +1011,14 @@ class ProtonRunner(QWidget):
 
     def _built_poll_tick(self):
         while self._built_msg_queue and hasattr(self, '_wemod_built_log'):
-            msg = self._built_msg_queue.pop(0)
+            msg = self._built_msg_queue.popleft()
             self._wemod_built_log.append(msg)
             sb = self._wemod_built_log.verticalScrollBar()
             sb.setValue(sb.maximum())
 
-        while self._built_progress_queue and hasattr(self, '_wemod_built_label'):
-            stage, pct = self._built_progress_queue.pop(0)
+        if self._built_progress_queue and hasattr(self, '_wemod_built_label'):
+            stage, pct = self._built_progress_queue[-1]
+            self._built_progress_queue.clear()
             self._wemod_built_label.setText(stage)
             self._wemod_built_bar.setValue(pct)
 

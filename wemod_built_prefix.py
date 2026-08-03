@@ -122,18 +122,57 @@ def _bp_detect_version_fallback(wineprefix: str) -> Optional[list]:
 
 def _bp_find_cached_zip(version_parts: list) -> Optional[str]:
     file_name = f'wemod_prefix{version_parts[0]}.{version_parts[1]}.zip'
-    cached = os.path.join(WEMOD_PREFIXES_DIR, file_name)
+    cached = os.path.join(BUILT_PREFIX_DIR, file_name)
     if os.path.isfile(cached):
         return cached
-    cached = os.path.join(BUILT_PREFIX_CACHE, file_name)
+    cached = os.path.join(WEMOD_PREFIXES_DIR, file_name)
     if os.path.isfile(cached):
-        _log(f'Migrando zip do cache temporario para {WEMOD_PREFIXES_DIR}')
-        os.makedirs(WEMOD_PREFIXES_DIR, exist_ok=True)
-        dst = os.path.join(WEMOD_PREFIXES_DIR, file_name)
+        _log(f'Migrando zip do projeto para {BUILT_PREFIX_DIR}')
+        os.makedirs(BUILT_PREFIX_DIR, exist_ok=True)
+        dst = os.path.join(BUILT_PREFIX_DIR, file_name)
         shutil.copy2(cached, dst)
         os.remove(cached)
         return dst
+    cached = os.path.join(BUILT_PREFIX_CACHE, file_name)
+    if os.path.isfile(cached):
+        _log(f'Migrando zip do cache temporario para {BUILT_PREFIX_DIR}')
+        os.makedirs(BUILT_PREFIX_DIR, exist_ok=True)
+        dst = os.path.join(BUILT_PREFIX_DIR, file_name)
+        shutil.copy2(cached, dst)
+        os.remove(cached)
+        return dst
+
+    any_zip = _bp_find_any_zip(BUILT_PREFIX_DIR)
+    if any_zip:
+        return any_zip
     return None
+
+
+def _bp_find_any_zip(search_dir: str) -> Optional[str]:
+    """Retorna qualquer .zip disponivel em search_dir (ordem alfabetica)."""
+    if not os.path.isdir(search_dir):
+        return None
+    for fname in sorted(os.listdir(search_dir)):
+        if fname.endswith('.zip'):
+            return os.path.join(search_dir, fname)
+    return None
+
+
+def _bp_get_assets_for_tag(repo_name: str, tag_name: str) -> list:
+    """Retorna os assets reais de uma release pelo tag (sem hardcode de filename)."""
+    try:
+        url = f'https://api.github.com/repos/{repo_name}/releases/tags/{tag_name}'
+        resp = _http_get(url)
+        data = json.loads(resp.read().decode('utf-8'))
+        assets = data.get('assets', []) if isinstance(data, dict) else []
+        if assets:
+            return [{
+                'browser_download_url': a.get('browser_download_url', ''),
+                'name': a.get('name', ''),
+            } for a in assets]
+    except Exception as e:
+        _log(f'Falha ao buscar assets do tag {tag_name}: {e}')
+    return []
 
 
 def _bp_get_github_releases(repo_name: str) -> list:
@@ -163,16 +202,14 @@ def _bp_get_github_releases(repo_name: str) -> list:
         resp = _http_get(url_tags)
         data = json.loads(resp.read().decode('utf-8'))
         if isinstance(data, list) and len(data) > 0:
-            _log(f'{len(data)} tag(s) encontrada(s), convertendo para releases...')
+            _log(f'{len(data)} tag(s) encontrada(s), buscando assets por tag...')
             releases = []
             for tag in data:
                 tag_name = tag.get('name', '')
+                assets = _bp_get_assets_for_tag(repo_name, tag_name)
                 releases.append({
                     'tag_name': tag_name,
-                    'assets': [{
-                        'browser_download_url':
-                            f'https://github.com/{repo_name}/releases/download/{tag_name}/wemod_prefix.zip'
-                    }],
+                    'assets': assets,
                 })
             return releases
     except Exception as e:
@@ -193,6 +230,8 @@ def _bp_find_closest_compatible_release(releases, current_version_parts) -> tupl
             continue
         rvp = _bp_parse_version(tag_name)
         if not rvp or not current_version_parts:
+            continue
+        if not release.get('assets'):
             continue
         cvp = current_version_parts
 
@@ -230,32 +269,84 @@ def _bp_find_closest_compatible_release(releases, current_version_parts) -> tupl
 
 
 def _bp_download_zip(url: str, dst_path: str,
-                     log_callback, progress_callback) -> bool:
-    req = urllib.request.Request(url, headers={'User-Agent': _DOWNLOAD_UA})
-    try:
-        with urllib.request.urlopen(req, timeout=300) as resp:
-            total = int(resp.headers.get('content-length', 0))
-            downloaded = 0
-            chunk_size = 8192
-            os.makedirs(os.path.dirname(dst_path), exist_ok=True)
-            with open(dst_path, 'wb') as f:
-                while True:
-                    chunk = resp.read(chunk_size)
-                    if not chunk:
-                        break
-                    f.write(chunk)
-                    downloaded += len(chunk)
-                    if total:
-                        mb = downloaded // 1024 // 1024
+                     log_callback, progress_callback,
+                     max_attempts: int = 3) -> bool:
+    """Baixa url para dst_path com resume parcial e retry.
+
+    O progresso usa chunk de 1 MiB (nao por chunk de socket) para nao
+    inundar a fila da GUI e travar o app.
+    """
+    os.makedirs(os.path.dirname(dst_path), exist_ok=True)
+    for attempt in range(1, max_attempts + 1):
+        try:
+            done = _bp_download_zip_once(url, dst_path,
+                                         log_callback, progress_callback)
+            if done:
+                log_callback('Download concluido')
+                return True
+            return False
+        except Exception as e:
+            if attempt < max_attempts:
+                log_callback(f'Tentativa {attempt} falhou: {e}. '
+                             f'Tentando novamente...')
+            else:
+                log_callback(f'Falha no download apos {max_attempts} '
+                             f'tentativas: {e}')
+                if os.path.isfile(dst_path):
+                    os.remove(dst_path)
+    return False
+
+
+def _bp_download_zip_once(url: str, dst_path: str,
+                          log_callback, progress_callback) -> bool:
+    chunk_size = 1024 * 1024
+    headers = {'User-Agent': _DOWNLOAD_UA}
+    already = 0
+    if os.path.isfile(dst_path):
+        already = os.path.getsize(dst_path)
+        if already > 0:
+            headers['Range'] = f'bytes={already}-'
+
+    req = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(req, timeout=300) as resp:
+        status = getattr(resp, 'status', 200)
+        total = int(resp.headers.get('content-length', 0))
+
+        if status == 206 and already > 0:
+            # resume: total agora e o que falta, entao soma o ja baixado
+            total += already
+            mode = 'ab'
+            base = already
+        else:
+            if already > 0:
+                log_callback('Servidor ignorou Range; reiniciando download')
+            mode = 'wb'
+            base = 0
+            already = 0
+
+        if total and base:
+            pct = 10 + int(60 * base / total)
+            progress_callback(f'Retomando download... {base // 1024 // 1024}MB'
+                              f'/{total // 1024 // 1024}MB', pct)
+
+        last_mb = -1
+        with open(dst_path, mode) as f:
+            while True:
+                chunk = resp.read(chunk_size)
+                if not chunk:
+                    break
+                f.write(chunk)
+                already += len(chunk)
+                if total:
+                    mb = already // 1024 // 1024
+                    if mb != last_mb:
+                        last_mb = mb
                         tmb = total // 1024 // 1024
-                        pct = 10 + int(60 * downloaded / total)
-                        progress_callback(f'Baixando prefixo... {mb}MB/{tmb}MB', pct)
-    except Exception as e:
-        log_callback(f'Falha no download: {e}')
-        if os.path.isfile(dst_path):
-            os.remove(dst_path)
-        return False
-    log_callback('Download concluido')
+                        pct = 10 + int(60 * already / total)
+                        progress_callback(f'Baixando prefixo... {mb}MB/{tmb}MB',
+                                          pct)
+    if total and already < total:
+        raise OSError(f'Download incompleto: {already}/{total} bytes')
     return True
 
 
@@ -363,9 +454,11 @@ def download_built_prefix(wineprefix: str,
         _bp_finish_install(wineprefix, log_callback, progress_callback)
         return True
 
-    # Download — salva permanentemente no diretorio do projeto
-    file_name = f'wemod_prefix{closest_version[0]}.{closest_version[1]}.zip'
-    perm_path = os.path.join(WEMOD_PREFIXES_DIR, file_name)
+    # Download — usa o nome real do asset da release, salvo no diretorio
+    # de built prefixes (sem hardcode de filename)
+    file_name = os.path.basename(url.split('?')[0]) or \
+        f'wemod_prefix{closest_version[0]}.{closest_version[1]}.zip'
+    perm_path = os.path.join(BUILT_PREFIX_DIR, file_name)
 
     progress_callback('Baixando prefixo...', 10)
     if not _bp_download_zip(url, perm_path, log_callback, progress_callback):
@@ -383,128 +476,6 @@ def download_built_prefix(wineprefix: str,
 
     _bp_finish_install(wineprefix, log_callback, progress_callback)
     return True
-
-
-def _bp_scan_local_prefixes(scan_folder: str, current_version_parts: list,
-                            exclude_folder: str = None) -> tuple:
-    closest_folder = None
-    closest_version = None
-    priority = 6
-
-    if not os.path.isdir(scan_folder):
-        return None, None
-
-    for folder in os.listdir(scan_folder):
-        folder_path = os.path.join(scan_folder, folder)
-        pfx_path = os.path.join(folder_path, 'pfx')
-        version_file = os.path.join(folder_path, 'version')
-
-        if exclude_folder and os.path.abspath(folder_path) == os.path.abspath(exclude_folder):
-            continue
-
-        if not os.path.isdir(pfx_path):
-            continue
-        if not os.path.isfile(os.path.join(pfx_path, '.wemod_installer')) and \
-           not os.path.isfile(os.path.join(pfx_path, WEMOD_MARKER)):
-            continue
-
-        if not os.path.isfile(version_file):
-            continue
-        try:
-            fvs = Path(version_file).read_text().strip()
-        except OSError:
-            continue
-        fvp = _bp_parse_version(fvs)
-        if not fvp:
-            continue
-
-        cvp = current_version_parts
-        if fvp[0] == cvp[0] and fvp[1] == cvp[1]:
-            return fvp, folder_path
-        elif fvp[0] == cvp[0] and fvp[1] < cvp[1]:
-            if priority > 2 or (priority == 2 and (not closest_folder or fvp[1] > closest_version[1])):
-                priority = 2; closest_folder = folder_path; closest_version = fvp
-        elif fvp[0] == cvp[0] and fvp[1] > cvp[1]:
-            if priority > 3 or (priority == 3 and (not closest_folder or fvp[1] < closest_version[1])):
-                priority = 3; closest_folder = folder_path; closest_version = fvp
-        elif fvp[0] < cvp[0]:
-            if priority > 4 or (priority == 4 and (not closest_folder or fvp[0] > closest_version[0] or (fvp[0] == closest_version[0] and fvp[1] > closest_version[1]))):
-                priority = 4; closest_folder = folder_path; closest_version = fvp
-        elif fvp[0] > cvp[0]:
-            if priority > 5 or (priority == 5 and (not closest_folder or fvp[0] < closest_version[0] or (fvp[0] == closest_version[0] and fvp[1] < closest_version[1]))):
-                priority = 5; closest_folder = folder_path; closest_version = fvp
-
-    return closest_version, closest_folder
-
-
-def _bp_scan_zip_prefixes(scan_folder: str, current_version_parts: list,
-                          log_callback=None) -> tuple:
-    if not os.path.isdir(scan_folder):
-        return None, None
-
-    closest_zip = None
-    closest_version = None
-    priority = 6
-
-    for fname in os.listdir(scan_folder):
-        if not fname.endswith('.zip'):
-            continue
-        zip_path = os.path.join(scan_folder, fname)
-        if not os.path.isfile(zip_path):
-            continue
-
-        try:
-            tmp_dir = os.path.join(scan_folder, f'_tmp_{fname[:-4]}')
-            os.makedirs(tmp_dir, exist_ok=True)
-            with zipfile.ZipFile(zip_path, 'r') as zf:
-                zf.extractall(tmp_dir)
-
-            version_file = os.path.join(tmp_dir, 'version')
-            if os.path.isfile(version_file):
-                fvs = Path(version_file).read_text().strip()
-                fvp = _bp_parse_version(fvs)
-            else:
-                fvp = None
-
-            pfx_dir = os.path.join(tmp_dir, 'pfx')
-            has_marker = (
-                os.path.isfile(os.path.join(pfx_dir, '.wemod_installer')) or
-                os.path.isfile(os.path.join(pfx_dir, WEMOD_MARKER))
-            )
-
-            if not has_marker:
-                shutil.rmtree(tmp_dir, ignore_errors=True)
-                continue
-
-            if not fvp:
-                shutil.rmtree(tmp_dir, ignore_errors=True)
-                continue
-
-            cvp = current_version_parts
-            if fvp[0] == cvp[0] and fvp[1] == cvp[1]:
-                shutil.rmtree(tmp_dir, ignore_errors=True)
-                return fvp, zip_path
-            elif fvp[0] == cvp[0] and fvp[1] < cvp[1]:
-                if priority > 2 or (priority == 2 and (not closest_zip or fvp[1] > closest_version[1])):
-                    priority = 2; closest_zip = zip_path; closest_version = fvp
-            elif fvp[0] == cvp[0] and fvp[1] > cvp[1]:
-                if priority > 3 or (priority == 3 and (not closest_zip or fvp[1] < closest_version[1])):
-                    priority = 3; closest_zip = zip_path; closest_version = fvp
-            elif fvp[0] < cvp[0]:
-                if priority > 4 or (priority == 4 and (not closest_zip or fvp[0] > closest_version[0] or (fvp[0] == closest_version[0] and fvp[1] > closest_version[1]))):
-                    priority = 4; closest_zip = zip_path; closest_version = fvp
-            elif fvp[0] > cvp[0]:
-                if priority > 5 or (priority == 5 and (not closest_zip or fvp[0] < closest_version[0] or (fvp[0] == closest_version[0] and fvp[1] < closest_version[1]))):
-                    priority = 5; closest_zip = zip_path; closest_version = fvp
-
-            shutil.rmtree(tmp_dir, ignore_errors=True)
-        except Exception:
-            shutil.rmtree(
-                os.path.join(scan_folder, f'_tmp_{fname[:-4]}'),
-                ignore_errors=True)
-            continue
-
-    return closest_version, closest_zip
 
 
 def _is_continuation(line: str) -> bool:
@@ -756,56 +727,32 @@ def install_built_prefix(wineprefix: str,
         progress_callback = lambda s, p: None
 
     current_version_parts = _bp_get_current_version(wineprefix)
+
     if not current_version_parts:
         log_callback('Versao do Proton nao detectada. Tentando download direto...')
         return download_built_prefix(wineprefix, log_callback, progress_callback,
                                      repo_user, repo_name)
 
-    log_callback(f'Procurando prefixos locais com WeMod '
-                 f'(v{current_version_parts[0]}.{current_version_parts[1]})...')
-    progress_callback('Buscando prefixos locais...', 0)
+    log_callback('Procurando prefixo padrao salvo em '
+                 f'{BUILT_PREFIX_DIR}...')
+    progress_callback('Buscando prefixos padrao...', 0)
 
-    scan_folder = os.path.dirname(os.path.dirname(wineprefix))
-    dest_compatdata = os.path.dirname(wineprefix)
-    closest_version, closest_folder = _bp_scan_local_prefixes(
-        scan_folder, current_version_parts, exclude_folder=dest_compatdata)
+    closest_zip = _bp_find_any_zip(BUILT_PREFIX_DIR)
+    if not closest_zip:
+        log_callback('Nenhum zip local. Baixando do GitHub...')
+        return download_built_prefix(wineprefix, log_callback, progress_callback,
+                                     repo_user, repo_name)
 
-    if not closest_folder and os.path.isdir(BUILT_PREFIX_DIR):
-        log_callback('Buscando prefixos padrao salvos...')
-        closest_version, closest_zip = _bp_scan_zip_prefixes(
-            BUILT_PREFIX_DIR, current_version_parts, log_callback)
-        if not closest_zip:
-            log_callback('Nenhum zip compativel, tentando qualquer zip disponivel...')
-            for fname in sorted(os.listdir(BUILT_PREFIX_DIR), reverse=True):
-                if not fname.endswith('.zip'):
-                    continue
-                closest_zip = os.path.join(BUILT_PREFIX_DIR, fname)
-                log_callback(f'Tentando {fname}...')
-                break
-
-        if closest_zip:
-            log_callback(f'Prefixo padrao encontrado: '
-                         f'{os.path.basename(closest_zip)}'
-                         f'{"" if not closest_version else f" (v{closest_version[0]}.{closest_version[1]})"}')
-            tmp_extract = os.path.join(BUILT_PREFIX_DIR,
-                                       f'_merge_{os.path.basename(closest_zip)[:-4]}')
-            os.makedirs(tmp_extract, exist_ok=True)
-            try:
-                with zipfile.ZipFile(closest_zip, 'r') as zf:
-                    zf.extractall(tmp_extract)
-                ok = merge_built_prefix(wineprefix, tmp_extract,
-                                        log_callback, progress_callback)
-            finally:
-                shutil.rmtree(tmp_extract, ignore_errors=True)
-            return ok
-
-    if closest_folder:
-        log_callback(f'Prefixo local encontrado: '
-                     f'{os.path.basename(closest_folder)} '
-                     f'(v{closest_version[0]}.{closest_version[1]})')
-        return merge_built_prefix(wineprefix, closest_folder,
-                                  log_callback, progress_callback)
-
-    log_callback('Nenhum prefixo local. Baixando do GitHub...')
-    return download_built_prefix(wineprefix, log_callback, progress_callback,
-                                 repo_user, repo_name)
+    log_callback(f'Prefixo padrao encontrado: '
+                 f'{os.path.basename(closest_zip)}')
+    tmp_extract = os.path.join(BUILT_PREFIX_DIR,
+                               f'_merge_{os.path.basename(closest_zip)[:-4]}')
+    os.makedirs(tmp_extract, exist_ok=True)
+    try:
+        with zipfile.ZipFile(closest_zip, 'r') as zf:
+            zf.extractall(tmp_extract)
+        ok = merge_built_prefix(wineprefix, tmp_extract,
+                                log_callback, progress_callback)
+    finally:
+        shutil.rmtree(tmp_extract, ignore_errors=True)
+    return ok
