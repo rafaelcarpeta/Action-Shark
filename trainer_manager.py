@@ -47,6 +47,8 @@ from PyQt6.QtGui import QIcon
 import error_logger
 import wemod_manager as wm
 import styles
+import i18n
+from i18n import t
 from ui_components import (
     StatusBadgeDelegate,
     FilterChipBar,
@@ -1260,6 +1262,7 @@ class ProtonRunner(QWidget):
             QApplication.instance().setStyleSheet(styles.GLOBAL_STYLESHEET)
         self.setStyleSheet(styles.GLOBAL_STYLESHEET)
         self.config = load_config()
+        i18n.init_language(self.config.get('language', 'en'))
 
         self.process_error_detected.connect(self._handle_process_error)
 
@@ -1359,7 +1362,7 @@ class ProtonRunner(QWidget):
 
         self.search_bar = QLineEdit()
         self.search_bar.setObjectName("searchBar")
-        self.search_bar.setPlaceholderText("Filtrar por nome, PID ou executável...")
+        self.search_bar.setPlaceholderText(t("search_placeholder"))
         self.search_bar.setFixedWidth(516)
         self.search_bar.setFixedHeight(35)
         self.search_bar.addAction(get_search_icon(16), QLineEdit.ActionPosition.LeadingPosition)
@@ -1367,14 +1370,14 @@ class ProtonRunner(QWidget):
         self.search_bar.textChanged.connect(self._apply_filters)
         search_container.addWidget(self.search_bar)
 
-        filter_menu_btn = QPushButton()
-        filter_menu_btn.setIcon(get_filter_icon(18))
-        filter_menu_btn.setObjectName("headerIconBtn")
-        filter_menu_btn.setFixedSize(28, 32)
-        filter_menu_btn.setToolTip("Filtrar / Opções Rápidas")
-        filter_menu_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        filter_menu_btn.clicked.connect(self._quick_menu)
-        search_container.addWidget(filter_menu_btn)
+        self.filter_menu_btn = QPushButton()
+        self.filter_menu_btn.setIcon(get_filter_icon(18))
+        self.filter_menu_btn.setObjectName("headerIconBtn")
+        self.filter_menu_btn.setFixedSize(28, 32)
+        self.filter_menu_btn.setToolTip(t("search_filter_tooltip"))
+        self.filter_menu_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.filter_menu_btn.clicked.connect(self._quick_menu)
+        search_container.addWidget(self.filter_menu_btn)
 
         top_bar_layout.addLayout(search_container)
 
@@ -1394,13 +1397,13 @@ class ProtonRunner(QWidget):
         tab_bar_layout.setContentsMargins(2, 2, 2, 2)
         tab_bar_layout.setSpacing(4)
 
-        self.tab_proc_btn = QPushButton("⚡ Processos Ativos (0)")
+        self.tab_proc_btn = QPushButton(t("nav_active_processes", count=0))
         self.tab_proc_btn.setObjectName("navTabBtn")
         self.tab_proc_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.tab_proc_btn.setProperty("selected", "true")
         self.tab_proc_btn.clicked.connect(lambda: self._switch_tab(0))
 
-        self.tab_pref_btn = QPushButton("📁 Prefixos Instalados (0)")
+        self.tab_pref_btn = QPushButton(t("nav_installed_prefixes", count=0))
         self.tab_pref_btn.setObjectName("navTabBtn")
         self.tab_pref_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.tab_pref_btn.setProperty("selected", "false")
@@ -1425,7 +1428,7 @@ class ProtonRunner(QWidget):
         proc_layout.setSpacing(0)
 
         self.proc_tree = QTreeWidget()
-        self.proc_tree.setHeaderLabels(['PID', 'Jogo / Executável', 'Ambiente / Runner', 'Status'])
+        self.proc_tree.setHeaderLabels([t('col_pid'), t('col_game_exe'), t('col_env_runner'), t('col_status')])
         self.proc_tree.setRootIsDecorated(False)
         self.proc_tree.setAlternatingRowColors(False)
         self.proc_tree.setSelectionBehavior(QTreeWidget.SelectionBehavior.SelectRows)
@@ -1463,7 +1466,7 @@ class ProtonRunner(QWidget):
         pref_layout.addWidget(self.chip_bar)
 
         self.pref_tree = QTreeWidget()
-        self.pref_tree.setHeaderLabels(['Jogo / Prefixo', 'Origem', 'Arquitetura', 'WeMod'])
+        self.pref_tree.setHeaderLabels([t('col_game_prefix'), t('col_source'), t('col_arch'), t('col_wemod')])
         self.pref_tree.setRootIsDecorated(False)
         self.pref_tree.setAlternatingRowColors(False)
         self.pref_tree.setSelectionBehavior(QTreeWidget.SelectionBehavior.SelectRows)
@@ -1508,47 +1511,48 @@ class ProtonRunner(QWidget):
         insp_top_widget.setFixedHeight(62)
         insp_top_widget.setLayout(insp_top)
 
-        back_btn = QPushButton()
-        back_btn.setIcon(get_back_icon(18))
-        back_btn.setObjectName("windowIconBtn")
-        back_btn.setFixedSize(28, 32)
-        back_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        back_btn.clicked.connect(self._refresh)
-        insp_top.addWidget(back_btn)
+        self.back_btn = QPushButton()
+        self.back_btn.setIcon(get_back_icon(18))
+        self.back_btn.setObjectName("windowIconBtn")
+        self.back_btn.setFixedSize(28, 32)
+        self.back_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.back_btn.setToolTip(t('tooltip_refresh'))
+        self.back_btn.clicked.connect(self._refresh)
+        insp_top.addWidget(self.back_btn)
 
         insp_top.addStretch()
 
-        insp_gear = QPushButton()
-        insp_gear.setIcon(get_gear_icon(14))
-        insp_gear.setToolTip('Configurações')
-        insp_gear.setObjectName("windowIconBtn")
-        insp_gear.setFixedSize(28, 32)
-        insp_gear.clicked.connect(self._open_settings)
-        insp_top.addWidget(insp_gear)
+        self.insp_gear = QPushButton()
+        self.insp_gear.setIcon(get_gear_icon(14))
+        self.insp_gear.setToolTip(t('tooltip_settings'))
+        self.insp_gear.setObjectName("windowIconBtn")
+        self.insp_gear.setFixedSize(28, 32)
+        self.insp_gear.clicked.connect(self._open_settings)
+        insp_top.addWidget(self.insp_gear)
 
-        minimize_btn = QPushButton()
-        minimize_btn.setIcon(get_minimize_icon(16))
-        minimize_btn.setToolTip('Minimizar')
-        minimize_btn.setObjectName("windowIconBtn")
-        minimize_btn.setFixedSize(28, 32)
-        minimize_btn.clicked.connect(self.showMinimized)
-        insp_top.addWidget(minimize_btn)
+        self.minimize_btn = QPushButton()
+        self.minimize_btn.setIcon(get_minimize_icon(16))
+        self.minimize_btn.setToolTip(t('tooltip_minimize'))
+        self.minimize_btn.setObjectName("windowIconBtn")
+        self.minimize_btn.setFixedSize(28, 32)
+        self.minimize_btn.clicked.connect(self.showMinimized)
+        insp_top.addWidget(self.minimize_btn)
 
-        maximize_btn = QPushButton()
-        maximize_btn.setIcon(get_maximize_icon(16))
-        maximize_btn.setToolTip('Maximizar / Restaurar')
-        maximize_btn.setObjectName("windowIconBtn")
-        maximize_btn.setFixedSize(28, 32)
-        maximize_btn.clicked.connect(self._toggle_maximized)
-        insp_top.addWidget(maximize_btn)
+        self.maximize_btn = QPushButton()
+        self.maximize_btn.setIcon(get_maximize_icon(16))
+        self.maximize_btn.setToolTip(t('tooltip_maximize'))
+        self.maximize_btn.setObjectName("windowIconBtn")
+        self.maximize_btn.setFixedSize(28, 32)
+        self.maximize_btn.clicked.connect(self._toggle_maximized)
+        insp_top.addWidget(self.maximize_btn)
 
-        close_btn = QPushButton()
-        close_btn.setIcon(get_close_icon(16))
-        close_btn.setToolTip('Fechar')
-        close_btn.setObjectName("windowIconBtn")
-        close_btn.setFixedSize(28, 32)
-        close_btn.clicked.connect(self.close)
-        insp_top.addWidget(close_btn)
+        self.close_btn = QPushButton()
+        self.close_btn.setIcon(get_close_icon(16))
+        self.close_btn.setToolTip(t('tooltip_close'))
+        self.close_btn.setObjectName("windowIconBtn")
+        self.close_btn.setFixedSize(28, 32)
+        self.close_btn.clicked.connect(self.close)
+        insp_top.addWidget(self.close_btn)
         inspector_layout.addWidget(insp_top_widget)
 
         # Game Banner Widget
@@ -1572,14 +1576,14 @@ class ProtonRunner(QWidget):
         pfx_header_row.addWidget(pfx_title_lbl)
         pfx_header_row.addStretch()
 
-        self.copy_pfx_btn = QPushButton("Copiar")
+        self.copy_pfx_btn = QPushButton(t("btn_copy"))
         self.copy_pfx_btn.setFixedHeight(22)
         self.copy_pfx_btn.setStyleSheet("font-size: 11px; padding: 2px 8px; background: #272834; border: 1px solid #3f4258; border-radius: 4px; color: #d1d5db;")
         self.copy_pfx_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.copy_pfx_btn.clicked.connect(self._copy_prefix_path)
         pfx_header_row.addWidget(self.copy_pfx_btn)
 
-        self.open_pfx_quick_btn = QPushButton("Abrir Pasta")
+        self.open_pfx_quick_btn = QPushButton(t("btn_open_folder"))
         self.open_pfx_quick_btn.setFixedHeight(22)
         self.open_pfx_quick_btn.setStyleSheet("font-size: 11px; padding: 2px 8px; background: transparent; border: 1px solid #3f4258; border-radius: 4px; color: #818cf8;")
         self.open_pfx_quick_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -1587,12 +1591,12 @@ class ProtonRunner(QWidget):
         pfx_header_row.addWidget(self.open_pfx_quick_btn)
         pfx_layout.addLayout(pfx_header_row)
 
-        self.pfx_path_label = QLabel("Nenhum prefixo selecionado")
+        self.pfx_path_label = QLabel(t("pfx_none_selected"))
         self.pfx_path_label.setStyleSheet("font-size: 11px; font-family: monospace; color: #d4d4d8; background: transparent; border: none;")
         self.pfx_path_label.setWordWrap(True)
         pfx_layout.addWidget(self.pfx_path_label)
 
-        self.add_to_lib_btn = QPushButton("➕ Adicionar à Lista de Prefixos")
+        self.add_to_lib_btn = QPushButton(t("btn_add_to_list"))
         self.add_to_lib_btn.setFixedHeight(26)
         self.add_to_lib_btn.setStyleSheet("font-size: 11px; font-weight: 600; background: rgba(99, 102, 241, 0.15); border: 1px solid rgba(99, 102, 241, 0.35); border-radius: 6px; color: #a5b4fc;")
         self.add_to_lib_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -1604,11 +1608,11 @@ class ProtonRunner(QWidget):
         inspector_layout.addSpacing(10)
 
         # Wine Version Section
-        wine_lbl = QLabel("Wine Version  ⓘ")
-        wine_lbl.setStyleSheet("font-size: 15px; font-weight: 400; color: #dddddf;")
-        wine_lbl.setFixedHeight(24)
-        wine_lbl.setToolTip("Versão do Wine/Proton em uso para este prefixo.")
-        inspector_layout.addWidget(wine_lbl)
+        self.wine_lbl = QLabel(t("label_wine_version"))
+        self.wine_lbl.setStyleSheet("font-size: 15px; font-weight: 400; color: #dddddf;")
+        self.wine_lbl.setFixedHeight(24)
+        self.wine_lbl.setToolTip(t("tooltip_wine_version"))
+        inspector_layout.addWidget(self.wine_lbl)
         inspector_layout.addSpacing(6)
 
         self.wine_version_frame = QFrame()
@@ -1621,7 +1625,7 @@ class ProtonRunner(QWidget):
         wv_layout.setContentsMargins(11, 0, 11, 0)
         wv_layout.setSpacing(6)
 
-        self.wine_version_label = QLabel("Nenhum selecionado")
+        self.wine_version_label = QLabel(t("wv_none_selected"))
         self.wine_version_label.setStyleSheet("font-size: 14px; font-weight: 400; color: #71717a; background: transparent; border: none;")
         self.wine_version_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         wv_layout.addWidget(self.wine_version_label)
@@ -1639,20 +1643,20 @@ class ProtonRunner(QWidget):
         tr_row.setSpacing(4)
         self.trainer_exe_input = QLineEdit()
         self.trainer_exe_input.setObjectName('trainerInput')
-        self.trainer_exe_input.setPlaceholderText("/path/to/trainer.exe")
+        self.trainer_exe_input.setPlaceholderText(t("placeholder_trainer_path"))
         tr_row.addWidget(self.trainer_exe_input)
 
-        browse_btn = RoundedButton("Browse")
-        browse_btn.setObjectName("browseBtn")
-        browse_btn.setFixedSize(81, 37)
-        browse_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        browse_btn.clicked.connect(self._browse_trainer_exe)
-        tr_row.addWidget(browse_btn)
+        self.browse_btn = RoundedButton(t("btn_browse"))
+        self.browse_btn.setObjectName("browseBtn")
+        self.browse_btn.setFixedSize(81, 37)
+        self.browse_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.browse_btn.clicked.connect(self._browse_trainer_exe)
+        tr_row.addWidget(self.browse_btn)
         inspector_layout.addWidget(trainer_field)
         inspector_layout.addSpacing(15)
 
         # Primary Action: Launch Trainer Button (Always vibrant blue, clickable)
-        self.launch_btn = RoundedButton("Launch Trainer")
+        self.launch_btn = RoundedButton(t("btn_launch_trainer"))
         self.launch_btn.setObjectName("launchTrainerBtn")
         self.launch_btn.setFixedHeight(40)
         self.launch_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -1667,10 +1671,10 @@ class ProtonRunner(QWidget):
         inspector_layout.addSpacing(13)
 
         # Quick Actions Header
-        qa_lbl = QLabel("Quick Actions")
-        qa_lbl.setStyleSheet("font-size: 15px; font-weight: 400; color: #eeeeef;")
-        qa_lbl.setFixedHeight(24)
-        inspector_layout.addWidget(qa_lbl)
+        self.qa_lbl = QLabel(t("label_quick_actions"))
+        self.qa_lbl.setStyleSheet("font-size: 15px; font-weight: 400; color: #eeeeef;")
+        self.qa_lbl.setFixedHeight(24)
+        inspector_layout.addWidget(self.qa_lbl)
         inspector_layout.addSpacing(14)
 
         # Quick Actions 2x2 Grid (Exact Mockup Layout)
@@ -1679,32 +1683,32 @@ class ProtonRunner(QWidget):
         qa_grid.setColumnStretch(0, 1)
         qa_grid.setColumnStretch(1, 1)
 
-        self.ce_btn = RoundedButton(" Cheat Engine")
+        self.ce_btn = RoundedButton(t("btn_cheat_engine"))
         self.ce_btn.setIcon(get_cheatengine_icon(16))
         self.ce_btn.setObjectName("quickActionBtn")
         self.ce_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.ce_btn.clicked.connect(self._run_ce_inspector)
         qa_grid.addWidget(self.ce_btn, 0, 0)
 
-        self.wemod_btn = RoundedButton(" WeMod Manager")
+        self.wemod_btn = RoundedButton(t("btn_wemod_manager"))
         self.wemod_btn.setIcon(get_wemod_icon(16))
         self.wemod_btn.setObjectName("quickActionBtn")
         self.wemod_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.wemod_btn.clicked.connect(self._open_wemod_modal)
         qa_grid.addWidget(self.wemod_btn, 0, 1)
 
-        self.open_folder_btn = RoundedButton(" Open Folder")
+        self.open_folder_btn = RoundedButton(t("btn_qa_open_folder"))
         self.open_folder_btn.setIcon(get_folder_icon(16))
         self.open_folder_btn.setObjectName("quickActionBtn")
         self.open_folder_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.open_folder_btn.clicked.connect(self._open_prefix_folder)
         qa_grid.addWidget(self.open_folder_btn, 1, 0)
 
-        self.open_logs_btn = RoundedButton(" Logs")
+        self.open_logs_btn = RoundedButton(t("btn_logs"))
         self.open_logs_btn.setIcon(get_log_icon(16))
         self.open_logs_btn.setObjectName("quickActionBtn")
         self.open_logs_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.open_logs_btn.setToolTip("Abrir pasta de logs de erros/crashes na raiz do app")
+        self.open_logs_btn.setToolTip(t("tooltip_logs"))
         self.open_logs_btn.clicked.connect(self._open_logs_folder)
         qa_grid.addWidget(self.open_logs_btn, 1, 1)
 
@@ -1776,6 +1780,57 @@ class ProtonRunner(QWidget):
         if event.position().y() < 62:
             self._toggle_maximized()
 
+    def retranslate_ui(self):
+        self.setWindowTitle(t('app_title'))
+        if hasattr(self, 'search_bar'):
+            self.search_bar.setPlaceholderText(t('search_placeholder'))
+        if hasattr(self, 'filter_menu_btn'):
+            self.filter_menu_btn.setToolTip(t('search_filter_tooltip'))
+        if hasattr(self, 'proc_tree'):
+            self.proc_tree.setHeaderLabels([t('col_pid'), t('col_game_exe'), t('col_env_runner'), t('col_status')])
+        if hasattr(self, 'pref_tree'):
+            self.pref_tree.setHeaderLabels([t('col_game_prefix'), t('col_source'), t('col_arch'), t('col_wemod')])
+        if hasattr(self, 'chip_bar'):
+            self.chip_bar.retranslate()
+        if hasattr(self, 'insp_gear'):
+            self.insp_gear.setToolTip(t('tooltip_settings'))
+        if hasattr(self, 'back_btn'):
+            self.back_btn.setToolTip(t('tooltip_refresh'))
+        if hasattr(self, 'minimize_btn'):
+            self.minimize_btn.setToolTip(t('tooltip_minimize'))
+        if hasattr(self, 'maximize_btn'):
+            self.maximize_btn.setToolTip(t('tooltip_maximize'))
+        if hasattr(self, 'close_btn'):
+            self.close_btn.setToolTip(t('tooltip_close'))
+        if hasattr(self, 'wine_lbl'):
+            self.wine_lbl.setText(t('label_wine_version'))
+            self.wine_lbl.setToolTip(t('tooltip_wine_version'))
+        if hasattr(self, 'trainer_exe_input'):
+            self.trainer_exe_input.setPlaceholderText(t('placeholder_trainer_path'))
+        if hasattr(self, 'browse_btn'):
+            self.browse_btn.setText(t('btn_browse'))
+        if hasattr(self, 'launch_btn'):
+            self.launch_btn.setText(t('btn_launch_trainer'))
+        if hasattr(self, 'qa_lbl'):
+            self.qa_lbl.setText(t('label_quick_actions'))
+        if hasattr(self, 'ce_btn'):
+            self.ce_btn.setText(t('btn_cheat_engine'))
+        if hasattr(self, 'wemod_btn'):
+            self.wemod_btn.setText(t('btn_wemod_manager'))
+        if hasattr(self, 'open_folder_btn'):
+            self.open_folder_btn.setText(t('btn_qa_open_folder'))
+        if hasattr(self, 'open_logs_btn'):
+            self.open_logs_btn.setText(t('btn_logs'))
+            self.open_logs_btn.setToolTip(t('tooltip_logs'))
+        if hasattr(self, 'copy_pfx_btn'):
+            self.copy_pfx_btn.setText(t('btn_copy'))
+        if hasattr(self, 'open_pfx_quick_btn'):
+            self.open_pfx_quick_btn.setText(t('btn_open_folder'))
+        if hasattr(self, 'add_to_lib_btn'):
+            self.add_to_lib_btn.setText(t('btn_add_to_list'))
+        self._on_item_selected()
+        self._load_tree()
+
     def _create_menu(self):
         menu = QMenu(self)
         menu.setStyleSheet(styles.MENU_STYLESHEET)
@@ -1783,10 +1838,10 @@ class ProtonRunner(QWidget):
 
     def _quick_menu(self):
         menu = self._create_menu()
-        menu.addAction('Adicionar Prefixo', self._add_custom_prefix)
-        menu.addAction('Atualizar Lista', self._refresh)
-        menu.addAction('Abrir Pasta de Logs', self._open_logs_folder)
-        menu.addAction('Configurações', self._open_settings)
+        menu.addAction(t('menu_add_prefix'), self._add_custom_prefix)
+        menu.addAction(t('menu_refresh_list'), self._refresh)
+        menu.addAction(t('menu_open_logs'), self._open_logs_folder)
+        menu.addAction(t('menu_settings'), self._open_settings)
         menu.exec(self.search_bar.mapToGlobal(self.search_bar.rect().bottomRight()))
 
     # ── Toast status ─────────────────────────────────────────────────
@@ -1801,9 +1856,9 @@ class ProtonRunner(QWidget):
     # ── Data Loading & Table Population ──────────────────────────────
 
     def _refresh(self):
-        self._show_toast("Atualizando...")
+        self._show_toast(t("toast_updating"))
         self._load_tree()
-        self._show_toast("✓ Lista atualizada.")
+        self._show_toast(t("toast_list_updated"))
 
     def _auto_refresh(self):
         # Rebuild the model so processes started or stopped after launch are
@@ -1826,7 +1881,7 @@ class ProtonRunner(QWidget):
             comm = p.get('comm', '')
             display_name = f"{name} ({comm})" if comm and comm != name else name
             runner = "Proton" if p.get('is_proton') else "Wine"
-            status = "Rodando"
+            status = t("status_running")
             pfx = p.get('wineprefix', '')
 
             item = QTreeWidgetItem([pid, display_name, runner, status])
@@ -1838,7 +1893,7 @@ class ProtonRunner(QWidget):
             if sel_pfx and pfx == sel_pfx:
                 proc_matched_item = item
 
-        self.tab_proc_btn.setText(f"⚡ Processos Ativos ({len(running_entries)})")
+        self.tab_proc_btn.setText(t("nav_active_processes", count=len(running_entries)))
 
         # ── 2. Populate Installed Prefixes (Steam, Launchers, Custom) ──
         self.pref_tree.clear()
@@ -1883,9 +1938,15 @@ class ProtonRunner(QWidget):
             arch = "win64"
 
             has_wemod = bool(pfx and wm.is_wemod_installed(pfx))
-            wemod_label = "✓ Instalado" if has_wemod else "Não instalado"
+            wemod_label = t("status_installed") if has_wemod else t("status_not_installed")
 
-            item = QTreeWidgetItem([name, source, arch, wemod_label])
+            display_source = source
+            if source in ('Personalizado', 'Custom'):
+                display_source = t('source_custom')
+            elif source in ('Não-Steam', 'Non-Steam'):
+                display_source = t('source_non_steam')
+
+            item = QTreeWidgetItem([name, display_source, arch, wemod_label])
             item.setData(0, Qt.ItemDataRole.UserRole, e)
             self.pref_tree.addTopLevelItem(item)
 
@@ -1894,7 +1955,7 @@ class ProtonRunner(QWidget):
             if sel_pfx and pfx == sel_pfx:
                 pref_matched_item = item
 
-        self.tab_pref_btn.setText(f"📁 Prefixos Instalados ({self.pref_tree.topLevelItemCount()})")
+        self.tab_pref_btn.setText(t("nav_installed_prefixes", count=self.pref_tree.topLevelItemCount()))
 
         self._apply_filters()
 
@@ -1967,15 +2028,15 @@ class ProtonRunner(QWidget):
     def _on_item_selected(self):
         data = self._selected_data()
         if not data:
-            self.banner_widget.set_game("Select a Game", "", "")
+            self.banner_widget.set_game(t("banner_select_game"), "", "")
             self._current_wine_bin = None
             if hasattr(self, 'wine_version_label'):
-                self.wine_version_label.setText("Nenhum selecionado")
+                self.wine_version_label.setText(t("wv_none_selected"))
                 self.wine_version_label.setStyleSheet("font-size: 14px; font-weight: 400; color: #71717a; background: transparent; border: none;")
             if hasattr(self, 'wine_version_frame'):
                 self.wine_version_frame.setToolTip("")
             if hasattr(self, 'pfx_path_label'):
-                self.pfx_path_label.setText("Nenhum prefixo selecionado")
+                self.pfx_path_label.setText(t("pfx_none_selected"))
             if hasattr(self, 'add_to_lib_btn'):
                 self.add_to_lib_btn.setVisible(False)
             return
@@ -1988,7 +2049,7 @@ class ProtonRunner(QWidget):
         self.banner_widget.set_game(name, source, appid)
 
         if hasattr(self, 'pfx_path_label'):
-            self.pfx_path_label.setText(pfx if pfx else "Nenhum prefixo associado")
+            self.pfx_path_label.setText(pfx if pfx else t("pfx_none_associated"))
 
         if hasattr(self, 'add_to_lib_btn'):
             is_proc = bool(data.get('pid'))
@@ -2021,13 +2082,13 @@ class ProtonRunner(QWidget):
         if hasattr(self, 'wine_version_label'):
             if wine_bin:
                 label = get_wine_runner_label(wine_bin, pfx)
-                display_text = f"{label} (Em execução)" if is_live else label
+                display_text = f"{label} {t('wv_running_suffix')}" if is_live else label
                 self.wine_version_label.setText(display_text)
                 self.wine_version_label.setStyleSheet("font-size: 14px; font-weight: 400; color: #eeeeef; background: transparent; border: none;")
                 if hasattr(self, 'wine_version_frame'):
-                    self.wine_version_frame.setToolTip(f"Binário: {wine_bin}")
+                    self.wine_version_frame.setToolTip(t("wv_binary_tooltip", bin=wine_bin))
             else:
-                self.wine_version_label.setText("Não detectado")
+                self.wine_version_label.setText(t("wv_not_detected"))
                 self.wine_version_label.setStyleSheet("font-size: 14px; font-weight: 400; color: #71717a; background: transparent; border: none;")
                 if hasattr(self, 'wine_version_frame'):
                     self.wine_version_frame.setToolTip("")
@@ -2037,9 +2098,9 @@ class ProtonRunner(QWidget):
     def _browse_trainer_exe(self):
         start_dir = self.config.get('trainers_folder', '') or os.path.expanduser('~')
         path, _ = QFileDialog.getOpenFileName(
-            self, 'Selecionar Executável do Trainer',
+            self, t('dialog_select_trainer_exe'),
             start_dir,
-            'Executáveis (*.exe);;Todos os arquivos (*)',
+            t('dialog_filter_exe'),
         )
         if path:
             self.trainer_exe_input.setText(path)
@@ -2047,11 +2108,11 @@ class ProtonRunner(QWidget):
     def _launch_trainer(self):
         data = self._selected_data()
         if not data:
-            self._show_toast("Selecione um jogo/prefixo na tabela primeiro", is_error=True)
+            self._show_toast(t("toast_select_first"), is_error=True)
             return
         pfx = data.get('wineprefix', '')
         if not pfx or not os.path.isdir(pfx):
-            self._show_toast("WINEPREFIX não encontrado ou inválido", is_error=True)
+            self._show_toast(t("toast_pfx_invalid"), is_error=True)
             return
 
         exe = self.trainer_exe_input.text().strip()
@@ -2080,32 +2141,32 @@ class ProtonRunner(QWidget):
                 app_name=trainer_name,
                 on_error_callback=self._on_process_error
             )
-            self._show_toast("✓ Trainer iniciado!")
+            self._show_toast(t("toast_trainer_launched"))
         except Exception as e:
-            self._show_toast(f"✗ Falha ao iniciar trainer: {e}", is_error=True)
+            self._show_toast(t("toast_trainer_failed", error=e), is_error=True)
 
     def _run_ce_inspector(self):
         data = self._selected_data()
         if not data:
-            self._show_toast("Selecione um prefixo primeiro", is_error=True)
+            self._show_toast(t("toast_select_prefix_first"), is_error=True)
             return
         pfx = data.get('wineprefix', '')
         if not pfx or not os.path.isdir(pfx):
-            self._show_toast("Selecione um prefixo válido primeiro", is_error=True)
+            self._show_toast(t("toast_select_valid_prefix"), is_error=True)
             return
 
         ce_exe = self.config.get('ce_path', '').strip()
         if not ce_exe or not os.path.isfile(ce_exe):
             reply = QMessageBox.question(
-                self, 'Cheat Engine Não Configurado',
-                'O executável do Cheat Engine ainda não foi configurado.\nDeseja selecionar o arquivo agora?',
+                self, t('msg_ce_not_configured_title'),
+                t('msg_ce_not_configured_body'),
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             )
             if reply == QMessageBox.StandardButton.Yes:
                 f, _ = QFileDialog.getOpenFileName(
-                    self, 'Selecionar Cheat Engine',
+                    self, t('dialog_select_ce_exe'),
                     os.path.expanduser('~'),
-                    'Executáveis (*.exe);;Todos os arquivos (*)',
+                    t('dialog_filter_exe'),
                 )
                 if f:
                     ce_exe = f
@@ -2138,29 +2199,29 @@ class ProtonRunner(QWidget):
                 app_name="CheatEngine",
                 on_error_callback=self._on_process_error
             )
-            self._show_toast("✓ Cheat Engine iniciado!")
+            self._show_toast(t("toast_ce_launched"))
         except Exception as e:
-            self._show_toast(f"✗ Falha ao iniciar Cheat Engine: {e}", is_error=True)
+            self._show_toast(t("toast_ce_failed", error=e), is_error=True)
 
     def _open_logs_folder(self):
         logs_dir = error_logger.get_logs_dir()
         if error_logger.open_logs_folder():
-            self._show_toast("✓ Pasta de logs aberta")
+            self._show_toast(t("toast_logs_opened"))
         else:
-            self._show_toast(f"✗ Falha ao abrir pasta de logs ({logs_dir})", is_error=True)
+            self._show_toast(t("toast_logs_open_failed", dir=logs_dir), is_error=True)
 
     def _on_process_error(self, log_path, msg):
         self.process_error_detected.emit(log_path, msg)
 
     def _handle_process_error(self, log_path, msg):
         log_name = os.path.basename(log_path)
-        self._show_toast(f"✗ Erro/Crash detectado! Log salvo: {log_name}", is_error=True)
-        self._log(f"Problema detectado: log gerado em {log_path}")
+        self._show_toast(t("toast_crash_detected", name=log_name), is_error=True)
+        self._log(t("log_issue_detected", path=log_path))
 
     def _open_wemod_modal(self):
         data = self._selected_data()
         if not data:
-            self._show_toast("Selecione um jogo/prefixo primeiro", is_error=True)
+            self._show_toast(t("toast_select_first"), is_error=True)
             return
         pfx = data.get('wineprefix', '')
         name = data.get('name', 'Jogo')
@@ -2174,7 +2235,7 @@ class ProtonRunner(QWidget):
         pfx = data.get('wineprefix', '')
         if pfx:
             QApplication.clipboard().setText(pfx)
-            self._show_toast("✓ Caminho do WINEPREFIX copiado!")
+            self._show_toast(t("toast_pfx_copied"))
 
     def _save_selected_to_custom_prefixes(self):
         data = self._selected_data()
@@ -2192,11 +2253,16 @@ class ProtonRunner(QWidget):
         pfx = data.get('wineprefix', '')
         if pfx and os.path.isdir(pfx):
             subprocess.Popen(['xdg-open', pfx])
-            self._show_toast(f"✓ Pasta aberta: {os.path.basename(pfx)}")
+            self._show_toast(t("toast_folder_opened", name=os.path.basename(pfx)))
 
     def _open_settings(self):
+        old_lang = i18n.get_language()
         dlg = SettingsDialog(self.config, save_config, self)
         if dlg.exec():
+            new_lang = self.config.get('language', 'en')
+            if new_lang != old_lang:
+                i18n.set_language(new_lang)
+                self.retranslate_ui()
             self._refresh()
 
     # ── Context Menu (Right Click) ───────────────────────────────────
@@ -2210,8 +2276,8 @@ class ProtonRunner(QWidget):
             clean_name = clean_name[:-9].strip()
 
         name, ok = QInputDialog.getText(
-            self, 'Adicionar à Lista de Prefixos',
-            'Nome para o prefixo:', text=clean_name
+            self, t('msg_add_to_list_title'),
+            t('msg_add_to_list_prompt'), text=clean_name
         )
         if not ok or not name.strip():
             return
@@ -2219,12 +2285,12 @@ class ProtonRunner(QWidget):
         custom = cfg.setdefault('custom_prefixes', [])
         for c in custom:
             if c.get('wineprefix') == pfx:
-                QMessageBox.information(self, 'Info', 'Este prefixo já está na lista de prefixos.')
+                QMessageBox.information(self, 'Info', t('msg_already_in_list'))
                 return
         custom.append({'name': name.strip(), 'wineprefix': pfx})
         save_config(cfg)
         self._refresh()
-        self._show_toast(f"✓ Prefixo adicionado à lista: {name.strip()}")
+        self._show_toast(t('toast_prefix_added', name=name.strip()))
 
     def _tree_context_menu(self, pos):
         curr_tree = self.tree
@@ -2233,10 +2299,10 @@ class ProtonRunner(QWidget):
         item = curr_tree.itemAt(pos)
         if not item:
             menu = self._create_menu()
-            act_add = menu.addAction('Adicionar Prefixo...')
+            act_add = menu.addAction(t('menu_add_prefix'))
             menu.addSeparator()
-            act_refresh = menu.addAction('Atualizar Lista')
-            act_show = menu.addAction('Mostrar Prefixos Ocultos')
+            act_refresh = menu.addAction(t('menu_refresh_list'))
+            act_show = menu.addAction(t('menu_show_hidden_prefixes'))
             action = menu.exec(curr_tree.viewport().mapToGlobal(pos))
             if action == act_add:
                 self._add_custom_prefix()
@@ -2262,35 +2328,35 @@ class ProtonRunner(QWidget):
         cfg = load_config()
         saved_pfxs = {c.get('wineprefix') for c in cfg.get('custom_prefixes', [])}
         if pfx and pfx not in saved_pfxs:
-            act_add_to_list = menu.addAction('➕ Adicionar este Prefixo à Lista de Prefixos')
+            act_add_to_list = menu.addAction(t('menu_add_to_list'))
 
         if pfx:
-            act_open = menu.addAction('Abrir pasta do WINEPREFIX')
-            act_copy = menu.addAction('Copiar caminho WINEPREFIX')
+            act_open = menu.addAction(t('menu_open_pfx_folder'))
+            act_copy = menu.addAction(t('menu_copy_pfx_path'))
         else:
             act_open = None
             act_copy = None
 
         menu.addSeparator()
-        act_trainer = menu.addAction('Executar Trainer (.exe)...')
-        act_wemod = menu.addAction('Gerenciador WeMod...')
-        act_ce = menu.addAction('Iniciar Cheat Engine')
+        act_trainer = menu.addAction(t('menu_launch_trainer'))
+        act_wemod = menu.addAction(t('menu_wemod_manager'))
+        act_ce = menu.addAction(t('menu_launch_ce'))
 
         if has_pid:
             menu.addSeparator()
-            act_kill = menu.addAction('Finalizar Processo (Kill)')
+            act_kill = menu.addAction(t('menu_kill_process'))
         else:
             act_kill = None
 
         if not is_proc_tab:
             menu.addSeparator()
-            save_menu = menu.addMenu('Salvar como')
-            act_backup = save_menu.addAction('Backup')
-            act_standard = save_menu.addAction('Prefixo Padrão')
-            act_restore = menu.addAction('Restaurar Backup')
+            save_menu = menu.addMenu(t('menu_save_as'))
+            act_backup = save_menu.addAction(t('menu_backup'))
+            act_standard = save_menu.addAction(t('menu_standard_prefix'))
+            act_restore = menu.addAction(t('menu_restore_backup'))
             menu.addSeparator()
-            act_hide = menu.addAction('Ocultar Prefixo')
-            act_remove = menu.addAction('Remover Prefixo do Disco')
+            act_hide = menu.addAction(t('menu_hide_prefix'))
+            act_remove = menu.addAction(t('menu_remove_prefix'))
         else:
             act_backup = act_standard = act_restore = act_hide = act_remove = None
 
@@ -2299,11 +2365,11 @@ class ProtonRunner(QWidget):
             self._save_existing_to_custom_prefixes(pfx, data.get('name', ''))
         elif act_copy and action == act_copy:
             QApplication.clipboard().setText(pfx)
-            self._show_toast("✓ WINEPREFIX copiado para a área de transferência")
+            self._show_toast(t('toast_pfx_copied'))
         elif act_open and action == act_open:
             if os.path.isdir(pfx):
                 subprocess.Popen(['xdg-open', pfx])
-                self._show_toast(f"✓ Pasta aberta: {os.path.basename(pfx)}")
+                self._show_toast(t('toast_folder_opened', name=os.path.basename(pfx)))
         elif action == act_trainer:
             self._launch_trainer()
         elif action == act_wemod:
@@ -2347,39 +2413,39 @@ class ProtonRunner(QWidget):
                 pass
         if notify:
             if killed:
-                self._show_toast(f"✓ {len(killed)} processo(s) finalizado(s) no prefixo")
+                self._show_toast(t('toast_processes_killed', count=len(killed)))
             else:
-                self._show_toast("Nenhum processo rodando neste prefixo")
+                self._show_toast(t('toast_no_processes'))
         return len(killed)
 
     def _add_custom_prefix(self):
         name, ok = QInputDialog.getText(
-            self, 'Adicionar Prefixo Não-Steam',
-            'Nome do jogo / prefixo:'
+            self, t('msg_add_custom_pfx_title'),
+            t('msg_add_custom_pfx_prompt')
         )
         if not ok or not name.strip():
             return
         pfx = QFileDialog.getExistingDirectory(
-            self, 'Selecionar WINEPREFIX (pasta que contém drive_c/)'
+            self, t('dialog_select_pfx_dir')
         )
         if not pfx:
             return
         if not os.path.isdir(os.path.join(pfx, 'drive_c')):
             QMessageBox.warning(
-                self, 'Aviso',
-                'A pasta selecionada não contém "drive_c".\nNão é um WINEPREFIX válido.'
+                self, t('msg_confirm_title'),
+                t('msg_not_valid_pfx')
             )
             return
         cfg = load_config()
         custom = cfg.setdefault('custom_prefixes', [])
         for c in custom:
             if c['wineprefix'] == pfx:
-                QMessageBox.information(self, 'Info', 'Este prefixo já foi adicionado.')
+                QMessageBox.information(self, 'Info', t('msg_pfx_already_added'))
                 return
         custom.append({'name': name.strip(), 'wineprefix': pfx})
         save_config(cfg)
         self._refresh()
-        self._show_toast(f"✓ Prefixo adicionado: {name.strip()}")
+        self._show_toast(t('toast_prefix_added', name=name.strip()))
 
     def _show_hidden_prefixes(self):
         self._open_settings()
@@ -2391,11 +2457,11 @@ class ProtonRunner(QWidget):
             hidden.append(pfx)
         save_config(cfg)
         self._refresh()
-        self._show_toast("Prefixo ocultado")
+        self._show_toast(t('toast_pfx_hidden'))
 
     def _remove_prefix(self, pfx, is_custom=False):
         if not os.path.isdir(pfx):
-            QMessageBox.warning(self, 'Aviso', 'Prefixo não existe no disco.')
+            QMessageBox.warning(self, t('msg_confirm_title'), t('msg_pfx_not_exist'))
             return
 
         delete_target = _resolve_prefix_root(pfx)
@@ -2417,14 +2483,14 @@ class ProtonRunner(QWidget):
         }
         if os.path.abspath(delete_target) in critical_roots:
             QMessageBox.critical(
-                self, 'Erro de Segurança',
-                f'Operação cancelada: a pasta alvo ({delete_target}) é um diretório raiz ou de biblioteca do sistema.'
+                self, t('msg_security_error_title'),
+                t('msg_security_error_body', target=delete_target)
             )
             return
 
         reply = QMessageBox.question(
-            self, 'Confirmar',
-            f'Tem certeza que deseja apagar permanentemente a pasta do prefixo?\n{delete_target}',
+            self, t('msg_confirm_title'),
+            t('msg_confirm_delete_pfx', target=delete_target),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply != QMessageBox.StandardButton.Yes:
@@ -2432,14 +2498,14 @@ class ProtonRunner(QWidget):
         self._kill_prefix_processes(pfx)
         result = subprocess.run(['rm', '-rf', delete_target], capture_output=True, text=True)
         if result.returncode != 0:
-            QMessageBox.critical(self, 'Erro', f'Não foi possível apagar o prefixo:\n{result.stderr}')
+            QMessageBox.critical(self, t('msg_confirm_title'), t('msg_error_delete_pfx', error=result.stderr))
             return
         cfg = load_config()
         if 'custom_prefixes' in cfg:
             cfg['custom_prefixes'] = [c for c in cfg['custom_prefixes'] if c.get('wineprefix') != pfx]
             save_config(cfg)
         self._refresh()
-        self._show_toast("✓ Prefixo apagado do disco")
+        self._show_toast(t('toast_pfx_deleted'))
 
     def _wemod_built_log_window(self, title: str):
         win = QDialog(self)
@@ -2449,7 +2515,7 @@ class ProtonRunner(QWidget):
         win.setStyleSheet(styles.GLOBAL_STYLESHEET)
         layout = QVBoxLayout(win)
 
-        self._wemod_built_label = QLabel('Preparando…')
+        self._wemod_built_label = QLabel(t('task_preparing'))
         self._wemod_built_label.setWordWrap(True)
         layout.addWidget(self._wemod_built_label)
 
@@ -2465,7 +2531,7 @@ class ProtonRunner(QWidget):
         )
         layout.addWidget(self._wemod_built_log, stretch=1)
 
-        self._wemod_built_close_btn = QPushButton('Fechar')
+        self._wemod_built_close_btn = QPushButton(t('btn_close'))
         self._wemod_built_close_btn.setVisible(False)
         self._wemod_built_close_btn.clicked.connect(win.accept)
         layout.addWidget(self._wemod_built_close_btn, alignment=Qt.AlignmentFlag.AlignRight)
@@ -2493,12 +2559,12 @@ class ProtonRunner(QWidget):
     def _backup_prefix(self, pfx, is_custom=False):
         source = _resolve_prefix_root(pfx)
         if not os.path.isdir(source):
-            QMessageBox.warning(self, 'Aviso', 'Pasta do prefixo não encontrada.')
+            QMessageBox.warning(self, t('msg_confirm_title'), t('msg_pfx_dir_not_found'))
             return
         default_name = os.path.basename(source)
         name, ok = QInputDialog.getText(
-            self, 'Salvar Backup',
-            'Nome do backup:', text=default_name,
+            self, t('msg_save_backup_title'),
+            t('msg_save_backup_prompt'), text=default_name,
         )
         if not ok or not name.strip():
             return
@@ -2506,14 +2572,14 @@ class ProtonRunner(QWidget):
         dst = os.path.join(source, f'{name}.zip')
         if os.path.exists(dst):
             reply = QMessageBox.question(
-                self, 'Sobrescrever',
-                f'O arquivo já existe:\n{dst}\nSobrescrever?',
+                self, t('msg_overwrite_title'),
+                t('msg_overwrite_prompt', dst=dst),
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             )
             if reply != QMessageBox.StandardButton.Yes:
                 return
 
-        self._wemod_built_progress = self._wemod_built_log_window(f'Backup — {name}')
+        self._wemod_built_progress = self._wemod_built_log_window(f"{t('menu_backup')} — {name}")
         self.setEnabled(False)
         self._built_msg_queue.clear()
         self._built_progress_queue.clear()
@@ -2522,8 +2588,8 @@ class ProtonRunner(QWidget):
 
         def task():
             try:
-                self._built_msg_queue.append(f'Salvando backup em: {dst}')
-                self._built_progress_queue.append(('Compactando arquivos...', 0))
+                self._built_msg_queue.append(t('task_saving_backup_to', dst=dst))
+                self._built_progress_queue.append((t('task_compressing_files'), 0))
                 skipped = 0
                 file_count = sum(len(f) for _, _, f in os.walk(source, followlinks=False))
                 with zipfile.ZipFile(dst, 'w', zipfile.ZIP_DEFLATED) as zf:
@@ -2542,14 +2608,14 @@ class ProtonRunner(QWidget):
                                 skipped += 1
                                 continue
                             pct = int(80 * current / file_count) if file_count else 80
-                            self._built_progress_queue.append((f'Compactando... ({current}/{file_count})', pct))
+                            self._built_progress_queue.append((t('task_compressing_progress', curr=current, total=file_count), pct))
                 if skipped:
-                    self._built_msg_queue.append(f'{skipped} arquivo(s) especial(is) ignorado(s)')
-                self._built_progress_queue.append(('Concluído!', 100))
-                self._built_msg_queue.append(f'Backup salvo com sucesso: {dst}')
+                    self._built_msg_queue.append(t('task_special_files_skipped', count=skipped))
+                self._built_progress_queue.append((t('task_completed'), 100))
+                self._built_msg_queue.append(t('task_backup_saved', dst=dst))
                 self._built_task_ok = True
             except Exception as e:
-                self._built_msg_queue.append(f'ERRO: {e}')
+                self._built_msg_queue.append(t('task_error', error=e))
                 self._built_task_ok = False
             self._built_task_done = True
 
@@ -2559,12 +2625,12 @@ class ProtonRunner(QWidget):
     def _save_as_standard_prefix(self, pfx, is_custom=False):
         source = _resolve_prefix_root(pfx)
         if not os.path.isdir(source):
-            QMessageBox.warning(self, 'Aviso', 'Pasta do prefixo não encontrada.')
+            QMessageBox.warning(self, t('msg_confirm_title'), t('msg_pfx_dir_not_found'))
             return
         default_name = os.path.basename(source)
         name, ok = QInputDialog.getText(
-            self, 'Salvar como Prefixo Padrão',
-            'Nome do prefixo padrão:', text=default_name,
+            self, t('msg_save_std_pfx_title'),
+            t('msg_save_std_pfx_prompt'), text=default_name,
         )
         if not ok or not name.strip():
             return
@@ -2572,14 +2638,14 @@ class ProtonRunner(QWidget):
         dst = os.path.join(BUILT_PREFIX_DIR, f'{name}.zip')
         if os.path.exists(dst):
             reply = QMessageBox.question(
-                self, 'Sobrescrever',
-                f'O arquivo já existe:\n{dst}\nSobrescrever?',
+                self, t('msg_overwrite_title'),
+                t('msg_overwrite_prompt', dst=dst),
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             )
             if reply != QMessageBox.StandardButton.Yes:
                 return
 
-        self._wemod_built_progress = self._wemod_built_log_window(f'Prefixo Padrão — {name}')
+        self._wemod_built_progress = self._wemod_built_log_window(f"{t('menu_standard_prefix')} — {name}")
         self.setEnabled(False)
         self._built_msg_queue.clear()
         self._built_progress_queue.clear()
@@ -2588,8 +2654,8 @@ class ProtonRunner(QWidget):
 
         def task():
             try:
-                self._built_msg_queue.append(f'Salvando prefixo padrão em: {dst}')
-                self._built_progress_queue.append(('Compactando arquivos...', 0))
+                self._built_msg_queue.append(t('task_saving_std_to', dst=dst))
+                self._built_progress_queue.append((t('task_compressing_files'), 0))
                 os.makedirs(BUILT_PREFIX_DIR, exist_ok=True)
                 skipped = 0
                 file_count = sum(len(f) for _, _, f in os.walk(source, followlinks=False))
@@ -2609,14 +2675,14 @@ class ProtonRunner(QWidget):
                                 skipped += 1
                                 continue
                             pct = int(80 * current / file_count) if file_count else 80
-                            self._built_progress_queue.append((f'Compactando... ({current}/{file_count})', pct))
+                            self._built_progress_queue.append((t('task_compressing_progress', curr=current, total=file_count), pct))
                 if skipped:
-                    self._built_msg_queue.append(f'{skipped} arquivo(s) especial(is) ignorado(s)')
-                self._built_progress_queue.append(('Concluído!', 100))
-                self._built_msg_queue.append(f'Prefixo padrão salvo: {dst}')
+                    self._built_msg_queue.append(t('task_special_files_skipped', count=skipped))
+                self._built_progress_queue.append((t('task_completed'), 100))
+                self._built_msg_queue.append(t('task_std_pfx_saved', dst=dst))
                 self._built_task_ok = True
             except Exception as e:
-                self._built_msg_queue.append(f'ERRO: {e}')
+                self._built_msg_queue.append(t('task_error', error=e))
                 self._built_task_ok = False
             self._built_task_done = True
 
@@ -2626,34 +2692,34 @@ class ProtonRunner(QWidget):
     def _restore_backup(self, pfx, is_custom=False):
         source = _resolve_prefix_root(pfx)
         if not os.path.isdir(source):
-            QMessageBox.warning(self, 'Aviso', 'Pasta do prefixo não encontrada.')
+            QMessageBox.warning(self, t('msg_confirm_title'), t('msg_pfx_dir_not_found'))
             return
         backups = sorted(
             f for f in os.listdir(source)
             if f.endswith('.zip') and os.path.isfile(os.path.join(source, f))
         )
         if not backups:
-            QMessageBox.information(self, 'Backup', 'Nenhum backup encontrado neste prefixo.')
+            QMessageBox.information(self, t('menu_backup'), t('msg_no_backups_found'))
             return
         if len(backups) == 1:
             selected = backups[0]
         else:
             selected, ok = QInputDialog.getItem(
-                self, 'Restaurar Backup',
-                'Selecione o backup:', backups, 0, False,
+                self, t('msg_restore_backup_title'),
+                t('msg_restore_backup_prompt'), backups, 0, False,
             )
             if not ok:
                 return
         backup_path = os.path.join(source, selected)
         reply = QMessageBox.question(
-            self, 'Confirmar',
-            f'Restaurar backup?\n{selected}\n\nOs arquivos atuais do prefixo serão substituídos.',
+            self, t('msg_confirm_title'),
+            t('msg_confirm_restore_backup', name=selected),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply != QMessageBox.StandardButton.Yes:
             return
 
-        self._wemod_built_progress = self._wemod_built_log_window(f'Restaurar — {selected}')
+        self._wemod_built_progress = self._wemod_built_log_window(f"{t('msg_restore_backup_title')} — {selected}")
         self.setEnabled(False)
         self._built_msg_queue.clear()
         self._built_progress_queue.clear()
@@ -2665,19 +2731,19 @@ class ProtonRunner(QWidget):
                 killed = self._kill_prefix_processes(pfx, notify=False)
                 if killed:
                     self._built_msg_queue.append(
-                        f'{killed} processo(s) finalizado(s) antes da restauração')
-                self._built_msg_queue.append(f'Restaurando backup: {selected}')
-                self._built_progress_queue.append(('Removendo prefixo atual...', 10))
+                        t('task_killed_before_restore', count=killed))
+                self._built_msg_queue.append(t('task_restoring_backup', name=selected))
+                self._built_progress_queue.append((t('task_removing_current_pfx'), 10))
                 if os.path.isdir(pfx):
                     shutil.rmtree(pfx)
-                self._built_progress_queue.append(('Extraindo backup...', 30))
+                self._built_progress_queue.append((t('task_extracting_backup'), 30))
                 with zipfile.ZipFile(backup_path, 'r') as zf:
                     zf.extractall(source)
-                self._built_progress_queue.append(('Concluído!', 100))
-                self._built_msg_queue.append('Backup restaurado com sucesso!')
+                self._built_progress_queue.append((t('task_completed'), 100))
+                self._built_msg_queue.append(t('task_backup_restored'))
                 self._built_task_ok = True
             except Exception as e:
-                self._built_msg_queue.append(f'ERRO: {e}')
+                self._built_msg_queue.append(t('task_error', error=e))
                 self._built_task_ok = False
             self._built_task_done = True
 
@@ -2692,6 +2758,8 @@ class ProtonRunner(QWidget):
 
 def main():
     error_logger.setup_global_exception_handler()
+    cfg = load_config()
+    i18n.init_language(cfg.get('language', 'en'))
     app = QApplication(sys.argv)
     app.setStyleSheet(styles.GLOBAL_STYLESHEET)
     app.setApplicationName('Action Shark')

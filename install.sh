@@ -23,11 +23,13 @@ mkdir -p "$APP_DIR"
 cat > "$DESKTOP_DST" <<EOF
 [Desktop Entry]
 Categories=Game;Utility;
+Comment=Wine/Proton prefixes .exe trainer manager
 Comment[pt_BR]=Gerenciador de trainers .exe em prefixes Wine/Proton
-Comment=Gerenciador de trainers .exe em prefixes Wine/Proton
+Comment[es]=Gestor de trainers .exe en prefijos Wine/Proton
 Exec=python3 "$SCRIPT_DIR/trainer_manager.py"
-GenericName[pt_BR]=
-GenericName=
+GenericName=Trainer Manager
+GenericName[pt_BR]=Gerenciador de Trainers
+GenericName[es]=Gestor de Trainers
 Icon=$SCRIPT_DIR/images/action-shark.svg
 MimeType=
 Name[pt_BR]=Action Shark

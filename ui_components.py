@@ -24,6 +24,7 @@ from PyQt6.QtWidgets import (
     QFrame,
     QStyleOptionButton,
     QStyle,
+    QComboBox,
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QRect, QRectF, QSize, QTimer, QPointF
 from PyQt6.QtGui import (
@@ -41,6 +42,8 @@ from PyQt6.QtGui import (
 import styles
 import wemod_manager as wm
 import error_logger
+import i18n
+from i18n import t
 
 
 CACHE_DIR = os.path.expanduser('~/.cache/action_shark')
@@ -386,7 +389,16 @@ class StatusBadgeDelegate(QStyledItemDelegate):
             badge_rect = QRectF(badge_x, badge_y, badge_w, badge_h)
 
             st_lower = status_text.lower()
-            is_positive = (st_lower in ("active", "rodando")) or ("instalado" in st_lower and "não" not in st_lower)
+            is_positive = (
+                st_lower in ("active", "rodando", "running", "en ejecución", "en ejecucion")
+                or (
+                    ("instalado" in st_lower or "installed" in st_lower)
+                    and "não" not in st_lower
+                    and "nao" not in st_lower
+                    and "not" not in st_lower
+                    and "no " not in st_lower
+                )
+            )
 
             if is_positive:
                 bg_color = QColor(34, 197, 94, 35)
@@ -433,12 +445,12 @@ class FilterChipBar(QWidget):
         layout.setSpacing(8)
 
         chips = [
-            ("ALL", "Todos"),
-            ("STEAM", "Steam"),
-            ("HEROIC", "Heroic"),
-            ("LUTRIS", "Lutris"),
-            ("BOTTLES", "Bottles"),
-            ("CUSTOM", "Personalizados"),
+            ("ALL", t("chip_all")),
+            ("STEAM", t("chip_steam")),
+            ("HEROIC", t("chip_heroic")),
+            ("LUTRIS", t("chip_lutris")),
+            ("BOTTLES", t("chip_bottles")),
+            ("CUSTOM", t("chip_custom")),
         ]
 
         for code, label in chips:
@@ -453,6 +465,12 @@ class FilterChipBar(QWidget):
 
         layout.addStretch()
         self._update_button_states()
+
+    def retranslate(self):
+        if "ALL" in self._buttons:
+            self._buttons["ALL"].setText(t("chip_all"))
+        if "CUSTOM" in self._buttons:
+            self._buttons["CUSTOM"].setText(t("chip_custom"))
 
     def set_active_filter(self, code: str):
         if self._active_filter != code:
@@ -481,7 +499,7 @@ class GameBannerWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFixedHeight(84)
-        self._game_title = "Select a Game"
+        self._game_title = t("banner_select_game")
         self._source = ""
         self._appid = ""
         self._pixmap = None
@@ -491,7 +509,7 @@ class GameBannerWidget(QWidget):
         Path(BANNER_CACHE_DIR).mkdir(parents=True, exist_ok=True)
 
     def set_game(self, title: str, source: str = "", appid: str = ""):
-        self._game_title = title or "Unknown Game"
+        self._game_title = title or t("banner_unknown_game")
         self._source = source or ""
         self._appid = str(appid).strip() if appid else ""
         self._pixmap = None
@@ -595,7 +613,7 @@ class WeModDialog(QDialog):
         self.game_name = game_name
         self._operation_running = False
 
-        self.setWindowTitle(f"WeMod Manager — {game_name}")
+        self.setWindowTitle(t("wemod_dialog_title", name=game_name))
         self.setMinimumSize(680, 520)
         self.setStyleSheet(styles.GLOBAL_STYLESHEET)
 
@@ -616,27 +634,27 @@ class WeModDialog(QDialog):
         h_layout = QVBoxLayout(header)
         h_layout.setSpacing(4)
 
-        title_lbl = QLabel("WeMod Integration")
+        title_lbl = QLabel(t("wemod_title"))
         title_lbl.setStyleSheet("font-size: 16px; font-weight: bold; color: #ffffff;")
         h_layout.addWidget(title_lbl)
 
-        pfx_lbl = QLabel(f"Prefix: {self.prefix}")
+        pfx_lbl = QLabel(t("wemod_prefix_label", prefix=self.prefix))
         pfx_lbl.setStyleSheet(f"color: {styles.TEXT_SECONDARY}; font-size: 11px;")
         pfx_lbl.setWordWrap(True)
         h_layout.addWidget(pfx_lbl)
 
-        self.status_lbl = QLabel("Status: Verificando...")
+        self.status_lbl = QLabel(t("wemod_status_checking"))
         self.status_lbl.setStyleSheet("font-size: 13px; font-weight: 600; color: #34d399;")
         h_layout.addWidget(self.status_lbl)
 
         layout.addWidget(header)
 
         dl_row = QHBoxLayout()
-        self.dl_btn = QPushButton("Baixar WeMod.exe")
+        self.dl_btn = QPushButton(t("wemod_btn_download"))
         self.dl_btn.clicked.connect(self._download_wemod)
         dl_row.addWidget(self.dl_btn)
 
-        self.clear_cache_btn = QPushButton("Limpar Cache")
+        self.clear_cache_btn = QPushButton(t("wemod_btn_clear_cache"))
         self.clear_cache_btn.clicked.connect(self._clear_cache)
         dl_row.addWidget(self.clear_cache_btn)
 
@@ -644,20 +662,20 @@ class WeModDialog(QDialog):
         layout.addLayout(dl_row)
 
         action_row = QHBoxLayout()
-        self.install_btn = QPushButton("Instalar Prefixo WeMod")
+        self.install_btn = QPushButton(t("wemod_btn_install"))
         self.install_btn.setStyleSheet(f"background-color: {styles.ACCENT_COLOR}; color: #ffffff; font-weight: bold;")
         self.install_btn.clicked.connect(self._install_built)
         action_row.addWidget(self.install_btn)
 
-        self.start_btn = QPushButton("▶ Iniciar WeMod")
+        self.start_btn = QPushButton(t("wemod_btn_start"))
         self.start_btn.clicked.connect(self._start_wemod)
         action_row.addWidget(self.start_btn)
 
-        self.stop_btn = QPushButton("■ Parar WeMod")
+        self.stop_btn = QPushButton(t("wemod_btn_stop"))
         self.stop_btn.clicked.connect(self._stop_wemod)
         action_row.addWidget(self.stop_btn)
 
-        self.uninstall_btn = QPushButton("Desinstalar")
+        self.uninstall_btn = QPushButton(t("wemod_btn_uninstall"))
         self.uninstall_btn.clicked.connect(self._uninstall_wemod)
         action_row.addWidget(self.uninstall_btn)
 
@@ -667,7 +685,7 @@ class WeModDialog(QDialog):
         self.progress_bar.setVisible(False)
         layout.addWidget(self.progress_bar)
 
-        layout.addWidget(QLabel("Logs de Operação:"))
+        layout.addWidget(QLabel(t("wemod_logs_header")))
         self.log_view = QTextEdit()
         self.log_view.setReadOnly(True)
         self.log_view.setStyleSheet(
@@ -678,7 +696,7 @@ class WeModDialog(QDialog):
 
         close_row = QHBoxLayout()
         close_row.addStretch()
-        self.close_btn = QPushButton("Fechar")
+        self.close_btn = QPushButton(t("btn_close"))
         self.close_btn.clicked.connect(self.accept)
         close_row.addWidget(self.close_btn)
         layout.addLayout(close_row)
@@ -731,7 +749,7 @@ class WeModDialog(QDialog):
         self.clear_cache_btn.setEnabled(has_cache)
 
         if not self.prefix or not os.path.isdir(self.prefix):
-            st = "Prefixo inexistente"
+            st = t("wemod_status_prefix_missing")
             color = "#ef4444"
             self.install_btn.setEnabled(False)
             self.start_btn.setEnabled(False)
@@ -746,13 +764,13 @@ class WeModDialog(QDialog):
             self.clear_cache_btn.setEnabled(has_cache and s != "Rodando")
 
             if s == "Rodando":
-                st = "▶ Rodando no Prefixo"
+                st = t("wemod_status_running")
                 color = "#34d399"
             elif s == "Instalado":
-                st = "● Instalado no Prefixo"
+                st = t("wemod_status_installed")
                 color = "#60a5fa"
             else:
-                st = "○ Não Instalado"
+                st = t("wemod_status_not_installed")
                 color = "#8e90a0"
 
         self.status_lbl.setText(f"Status: {st}")
@@ -761,14 +779,14 @@ class WeModDialog(QDialog):
     def _download_wemod(self):
         if not self._start_operation():
             return
-        self.log("Baixando WeMod.exe mais recente...")
+        self.log(t("wemod_log_downloading"))
 
         def fetch():
             try:
                 wm.download_wemod()
-                self.log_message.emit("✓ WeMod.exe baixado com sucesso.")
+                self.log_message.emit(t("wemod_log_download_success"))
             except Exception as e:
-                self.log_message.emit(f"✗ Erro ao baixar WeMod: {e}")
+                self.log_message.emit(t("wemod_log_download_error", error=e))
             finally:
                 self.operation_finished.emit()
 
@@ -777,21 +795,21 @@ class WeModDialog(QDialog):
     def _clear_cache(self):
         ans = QMessageBox.question(
             self,
-            "Limpar Cache",
-            "Isso removerá os binários baixados do WeMod e exigirá um novo download.",
+            t("wemod_clear_cache_title"),
+            t("wemod_clear_cache_msg"),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if ans != QMessageBox.StandardButton.Yes or not self._start_operation():
             return
 
-        self.log("Limpando cache do WeMod...")
+        self.log(t("wemod_log_clearing_cache"))
 
         def task():
             try:
                 wm.clear_cache()
-                self.log_message.emit("✓ Cache do WeMod limpo com sucesso.")
+                self.log_message.emit(t("wemod_log_cache_cleared"))
             except Exception as e:
-                self.log_message.emit(f"✗ Erro ao limpar cache: {e}")
+                self.log_message.emit(t("wemod_log_clear_cache_error", error=e))
             finally:
                 self.operation_finished.emit()
 
@@ -804,7 +822,7 @@ class WeModDialog(QDialog):
             return
         self.progress_bar.setVisible(True)
         self.progress_bar.setValue(0)
-        self.log(f"Iniciando instalação de prefixo pré-configurado em {self.prefix}...")
+        self.log(t("wemod_log_installing_built", prefix=self.prefix))
 
         def task():
             try:
@@ -814,17 +832,17 @@ class WeModDialog(QDialog):
                     progress_callback=lambda s, p: self.progress_changed.emit(s, p),
                 )
                 if ok:
-                    self.log_message.emit("Configurando symlinks do WeMod...")
+                    self.log_message.emit(t("wemod_log_configuring_symlinks"))
                     wm.install_wemod_prefix(
                         self.prefix,
                         log_callback=lambda m: self.log_message.emit(m),
                         progress_callback=lambda s, p: self.progress_changed.emit(s, p),
                     )
-                    self.log_message.emit("✓ WeMod instalado com sucesso no prefixo!")
+                    self.log_message.emit(t("wemod_log_install_success"))
                 else:
-                    self.log_message.emit("✗ Falha na instalação do prefixo pré-configurado.")
+                    self.log_message.emit(t("wemod_log_install_failed"))
             except Exception as e:
-                self.log_message.emit(f"✗ Erro inesperado: {e}")
+                self.log_message.emit(t("wemod_log_unexpected_error", error=e))
             finally:
                 self.operation_finished.emit()
 
@@ -833,11 +851,11 @@ class WeModDialog(QDialog):
     def _start_wemod(self):
         if not self._start_operation():
             return
-        self.log("Iniciando WeMod...")
+        self.log(t("wemod_log_starting"))
 
         def _on_error(log_path, _summary):
             log_name = os.path.basename(log_path)
-            self.log_message.emit(f"✗ Erro/Crash no WeMod: log salvo em logs/{log_name}")
+            self.log_message.emit(t("wemod_log_crash", name=log_name))
 
         def task():
             try:
@@ -847,11 +865,11 @@ class WeModDialog(QDialog):
                     on_error_callback=_on_error
                 )
                 if pid:
-                    self.log_message.emit(f"✓ WeMod iniciado (PID {pid}).")
+                    self.log_message.emit(t("wemod_log_started_pid", pid=pid))
                 else:
-                    self.log_message.emit("✗ WeMod não iniciou. Verifique a pasta logs se houve falha.")
+                    self.log_message.emit(t("wemod_log_not_started"))
             except Exception as e:
-                self.log_message.emit(f"✗ Erro ao iniciar WeMod: {e}")
+                self.log_message.emit(t("wemod_log_start_error", error=e))
             finally:
                 self.operation_finished.emit()
 
@@ -860,14 +878,14 @@ class WeModDialog(QDialog):
     def _stop_wemod(self):
         if not self._start_operation():
             return
-        self.log("Parando WeMod...")
+        self.log(t("wemod_log_stopping"))
 
         def task():
             try:
                 wm.stop_wemod(self.prefix)
-                self.log_message.emit("✓ WeMod finalizado.")
+                self.log_message.emit(t("wemod_log_stopped"))
             except Exception as e:
-                self.log_message.emit(f"✗ Erro ao parar WeMod: {e}")
+                self.log_message.emit(t("wemod_log_stop_error", error=e))
             finally:
                 self.operation_finished.emit()
 
@@ -876,21 +894,21 @@ class WeModDialog(QDialog):
     def _uninstall_wemod(self):
         ans = QMessageBox.question(
             self,
-            "Desinstalar WeMod",
-            f"Deseja realmente desinstalar o WeMod do prefixo de {self.game_name}?",
+            t("wemod_uninstall_title"),
+            t("wemod_uninstall_msg", name=self.game_name),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if ans == QMessageBox.StandardButton.Yes:
             if not self._start_operation():
                 return
-            self.log("Desinstalando WeMod...")
+            self.log(t("wemod_log_uninstalling"))
 
             def task():
                 try:
                     wm.remove_wemod_prefix(self.prefix)
-                    self.log_message.emit("✓ WeMod desinstalado.")
+                    self.log_message.emit(t("wemod_log_uninstalled"))
                 except Exception as e:
-                    self.log_message.emit(f"✗ Erro na desinstalação: {e}")
+                    self.log_message.emit(t("wemod_log_uninstall_error", error=e))
                 finally:
                     self.operation_finished.emit()
 
@@ -900,16 +918,17 @@ class WeModDialog(QDialog):
 # ── Settings Dialog ───────────────────────────────────────────────────
 
 class SettingsDialog(QDialog):
-    """Settings dialog for Trainers Folder, Cheat Engine Path, and Hidden Prefixes."""
+    """Settings dialog for Language, Trainers Folder, Cheat Engine Path, and Hidden Prefixes."""
 
     def __init__(self, config: dict, save_callback, parent=None):
         super().__init__(parent)
         self.config = config
         self.save_callback = save_callback
+        self._original_lang = i18n.get_language()
 
-        self.setWindowTitle("Configurações — Action Shark")
+        self.setWindowTitle(t("settings_window_title"))
         self.setObjectName('settingsDialog')
-        self.setMinimumSize(580, 490)
+        self.setMinimumSize(580, 540)
         self.setStyleSheet(styles.GLOBAL_STYLESHEET)
 
         self._init_ui()
@@ -917,87 +936,136 @@ class SettingsDialog(QDialog):
     def _init_ui(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(16)
+        layout.setSpacing(14)
 
-        title = QLabel("Configurações Gerais")
-        title.setStyleSheet("font-size: 16px; font-weight: bold; color: #ffffff;")
-        layout.addWidget(title)
+        self.title_lbl = QLabel(t("settings_header"))
+        self.title_lbl.setStyleSheet("font-size: 16px; font-weight: bold; color: #ffffff;")
+        layout.addWidget(self.title_lbl)
 
-        layout.addWidget(QLabel("Pasta Raiz de Trainers (.exe):"))
+        # Language Selection Row
+        self.lang_label = QLabel(t("settings_language_label"))
+        layout.addWidget(self.lang_label)
+        lang_row = QHBoxLayout()
+        self.lang_combo = QComboBox()
+        self.lang_combo.setObjectName('languageCombo')
+        self.lang_combo.addItem("English", "en")
+        self.lang_combo.addItem("Português", "pt")
+        self.lang_combo.addItem("Español", "es")
+
+        curr_lang = self.config.get("language", i18n.get_language())
+        idx = self.lang_combo.findData(curr_lang)
+        if idx >= 0:
+            self.lang_combo.setCurrentIndex(idx)
+        self.lang_combo.currentIndexChanged.connect(self._on_lang_changed)
+        lang_row.addWidget(self.lang_combo)
+        lang_row.addStretch()
+        layout.addLayout(lang_row)
+
+        self.trainers_label = QLabel(t("settings_trainers_folder"))
+        layout.addWidget(self.trainers_label)
         tr_row = QHBoxLayout()
         self.trainers_input = QLineEdit()
         self.trainers_input.setText(self.config.get("trainers_folder", ""))
-        self.trainers_input.setPlaceholderText("Ex.: /home/user/Games/Trainers...")
+        self.trainers_input.setPlaceholderText(t("settings_trainers_placeholder"))
         tr_row.addWidget(self.trainers_input)
 
-        browse_tr = QPushButton("Procurar…")
-        browse_tr.setObjectName('browseTrainers')
-        browse_tr.setToolTip('Selecionar a pasta de trainers')
-        browse_tr.clicked.connect(self._browse_trainers)
-        tr_row.addWidget(browse_tr)
+        self.browse_tr = QPushButton(t("settings_browse"))
+        self.browse_tr.setObjectName('browseTrainers')
+        self.browse_tr.setToolTip(t("settings_browse_trainers_tooltip"))
+        self.browse_tr.clicked.connect(self._browse_trainers)
+        tr_row.addWidget(self.browse_tr)
         layout.addLayout(tr_row)
 
-        layout.addWidget(QLabel("Caminho do Executável do Cheat Engine (.exe):"))
+        self.ce_label = QLabel(t("settings_ce_path"))
+        layout.addWidget(self.ce_label)
         ce_row = QHBoxLayout()
         self.ce_input = QLineEdit()
         self.ce_input.setText(self.config.get("ce_path", ""))
-        self.ce_input.setPlaceholderText("Ex.: cheatengine-x86_64-SSE4-AVX2.exe")
+        self.ce_input.setPlaceholderText(t("settings_ce_placeholder"))
         ce_row.addWidget(self.ce_input)
 
-        browse_ce = QPushButton("Procurar…")
-        browse_ce.setObjectName('browseCheatEngine')
-        browse_ce.setToolTip('Selecionar o executável do Cheat Engine')
-        browse_ce.clicked.connect(self._browse_ce)
-        ce_row.addWidget(browse_ce)
+        self.browse_ce = QPushButton(t("settings_browse"))
+        self.browse_ce.setObjectName('browseCheatEngine')
+        self.browse_ce.setToolTip(t("settings_browse_ce_tooltip"))
+        self.browse_ce.clicked.connect(self._browse_ce)
+        ce_row.addWidget(self.browse_ce)
         layout.addLayout(ce_row)
 
-        layout.addWidget(QLabel("Prefixos Ocultos:"))
+        self.hidden_label = QLabel(t("settings_hidden_prefixes"))
+        layout.addWidget(self.hidden_label)
         self.hidden_list = QListWidget()
         for pfx in self.config.get("hidden_prefixes", []):
             self.hidden_list.addItem(pfx)
         layout.addWidget(self.hidden_list, stretch=1)
 
-        unhide_btn = QPushButton("Restaurar / Reexibir Prefixo Selecionado")
-        unhide_btn.clicked.connect(self._unhide_selected)
-        layout.addWidget(unhide_btn)
+        self.unhide_btn = QPushButton(t("settings_unhide_btn"))
+        self.unhide_btn.clicked.connect(self._unhide_selected)
+        layout.addWidget(self.unhide_btn)
 
-        layout.addWidget(QLabel("Pasta de Logs de Erros/Crashes (Raiz do App):"))
+        self.logs_label = QLabel(t("settings_logs_folder"))
+        layout.addWidget(self.logs_label)
         logs_box = QHBoxLayout()
         self.logs_path_lbl = QLabel(error_logger.get_logs_dir())
         self.logs_path_lbl.setStyleSheet("color: #9ca3af; font-family: monospace; font-size: 11px;")
         self.logs_path_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         logs_box.addWidget(self.logs_path_lbl, stretch=1)
-        open_logs_btn = QPushButton("Abrir Pasta de Logs")
-        open_logs_btn.setObjectName("openLogsBtn")
-        open_logs_btn.setToolTip("Abrir pasta de logs na raiz do aplicativo")
-        open_logs_btn.clicked.connect(error_logger.open_logs_folder)
-        logs_box.addWidget(open_logs_btn)
+        self.open_logs_btn = QPushButton(t("settings_open_logs_btn"))
+        self.open_logs_btn.setObjectName("openLogsBtn")
+        self.open_logs_btn.setToolTip(t("settings_open_logs_tooltip"))
+        self.open_logs_btn.clicked.connect(error_logger.open_logs_folder)
+        logs_box.addWidget(self.open_logs_btn)
         layout.addLayout(logs_box)
 
         btn_row = QHBoxLayout()
         btn_row.addStretch()
 
-        save_btn = QPushButton("Salvar")
-        save_btn.setObjectName('saveSettings')
-        save_btn.clicked.connect(self._save)
-        btn_row.addWidget(save_btn)
+        self.save_btn = QPushButton(t("settings_save_btn"))
+        self.save_btn.setObjectName('saveSettings')
+        self.save_btn.clicked.connect(self._save)
+        btn_row.addWidget(self.save_btn)
 
-        cancel_btn = QPushButton("Cancelar")
-        cancel_btn.clicked.connect(self.reject)
-        btn_row.addWidget(cancel_btn)
+        self.cancel_btn = QPushButton(t("settings_cancel_btn"))
+        self.cancel_btn.clicked.connect(self.reject)
+        btn_row.addWidget(self.cancel_btn)
 
         layout.addLayout(btn_row)
 
+    def _on_lang_changed(self, index):
+        new_lang = self.lang_combo.currentData()
+        if new_lang:
+            i18n.set_language(new_lang)
+            self.retranslate_ui()
+
+    def retranslate_ui(self):
+        self.setWindowTitle(t("settings_window_title"))
+        self.title_lbl.setText(t("settings_header"))
+        self.lang_label.setText(t("settings_language_label"))
+        self.trainers_label.setText(t("settings_trainers_folder"))
+        self.trainers_input.setPlaceholderText(t("settings_trainers_placeholder"))
+        self.browse_tr.setText(t("settings_browse"))
+        self.browse_tr.setToolTip(t("settings_browse_trainers_tooltip"))
+        self.ce_label.setText(t("settings_ce_path"))
+        self.ce_input.setPlaceholderText(t("settings_ce_placeholder"))
+        self.browse_ce.setText(t("settings_browse"))
+        self.browse_ce.setToolTip(t("settings_browse_ce_tooltip"))
+        self.hidden_label.setText(t("settings_hidden_prefixes"))
+        self.unhide_btn.setText(t("settings_unhide_btn"))
+        self.logs_label.setText(t("settings_logs_folder"))
+        self.open_logs_btn.setText(t("settings_open_logs_btn"))
+        self.open_logs_btn.setToolTip(t("settings_open_logs_tooltip"))
+        self.save_btn.setText(t("settings_save_btn"))
+        self.cancel_btn.setText(t("settings_cancel_btn"))
+
     def _browse_trainers(self):
-        d = QFileDialog.getExistingDirectory(self, "Selecionar Pasta de Trainers", self.trainers_input.text() or os.path.expanduser('~'))
+        d = QFileDialog.getExistingDirectory(self, t("settings_browse_trainers_title"), self.trainers_input.text() or os.path.expanduser('~'))
         if d:
             self.trainers_input.setText(d)
 
     def _browse_ce(self):
         f, _ = QFileDialog.getOpenFileName(
-            self, "Selecionar Executável do Cheat Engine",
+            self, t("settings_browse_ce_title"),
             os.path.expanduser('~'),
-            "Executáveis (*.exe);;Todos os arquivos (*)"
+            t("dialog_filter_exe")
         )
         if f:
             self.ce_input.setText(f)
@@ -1011,6 +1079,9 @@ class SettingsDialog(QDialog):
             self.hidden_list.takeItem(row)
 
     def _save(self):
+        selected_lang = self.lang_combo.currentData() or i18n.DEFAULT_LANGUAGE
+        self.config["language"] = selected_lang
+        i18n.set_language(selected_lang)
         self.config["trainers_folder"] = self.trainers_input.text().strip()
         self.config["ce_path"] = self.ce_input.text().strip()
 
@@ -1020,4 +1091,9 @@ class SettingsDialog(QDialog):
         self.config["hidden_prefixes"] = hidden
 
         self.save_callback(self.config)
+        self.accept()
+
+    def reject(self):
+        i18n.set_language(self._original_lang)
+        super().reject()
         self.accept()

@@ -1,168 +1,175 @@
 # Action Shark v1.2
 
-Gerenciador gráfico (PyQt6) para executar **trainers** (aplicativos que modificam o comportamento de jogos em tempo de execução, como vidas infinitas, dinheiro infinito, etc.) no Linux usando prefixes Wine/Proton. Detecta automaticamente jogos Steam e de vários launchers, além de integrar o **WeMod** completamente (download, instalação via prefixo pré-configurado, launch e stop).
+[English](README.md) | [Português](README.pt.md) | [Español](README.es.md)
 
-![Action Shark — interface real validada](images/ui_real_validada.png)
+Graphical manager (PyQt6) to run **trainers** (applications that modify game runtime behavior, such as infinite health, infinite currency, etc.) on Linux using Wine/Proton prefixes. Automatically detects Steam games and titles from various launchers, and provides complete **WeMod** integration (download, install via pre-configured prefix, launch, and stop).
 
-> **Aviso:** Os arquivos anexados nas releases (ex.: `GE-Proton10.1.zip`) são **prefixos Wine/Proton pré-configurados** para uso com o Action Shark. **Não são o aplicativo em si.** O app deve ser clonado ou baixado separadamente do repositório.
+![Action Shark — validated UI](images/ui_real_validada.png)
 
-## Como funciona
+> **Notice:** The files attached to releases (e.g. `GE-Proton10.1.zip`) are **pre-configured Wine/Proton prefixes** designed for use with Action Shark. **They are not the application itself.** The app must be cloned or downloaded separately from the repository.
 
-O programa varre o sistema em busca de:
+## How It Works
 
-1. **Jogos Steam** via `protontricks -l` + `compatdata/`
-2. **Processos Wine/Proton ativos** lendo `/proc/[pid]/environ` e `cmdline`
-3. **Prefixes de launchers** lendo arquivos de configuração e pastas conhecidas
-4. **Prefixes customizados** adicionados manualmente pelo usuário
+The program scans the system for:
 
-Com um prefixo selecionado, você pode executar qualquer `.exe` (trainer) dentro dele com o Wine correto. A aba **Trainer/CE** permite selecionar um prefixo e executar um trainer ou o Cheat Engine (versão Windows) diretamente. A guia **WeMod** baixa, instala e gerencia o WeMod no prefixo desejado.
+1. **Steam Games** via `protontricks -l` + `compatdata/`
+2. **Active Wine/Proton Processes** by reading `/proc/[pid]/environ` and `cmdline`
+3. **Launcher Prefixes** by parsing configuration files and standard directory paths
+4. **Custom Prefixes** added manually by the user
 
-## Funcionalidades
+With a prefix selected, you can run any `.exe` (trainer) inside it using the appropriate Wine environment. The **Trainer/CE** tab allows selecting a prefix and executing a trainer or Cheat Engine (Windows version) directly. The **WeMod** tab downloads, installs, and manages WeMod within any desired prefix.
 
-- **Detecção automática** de jogos e prefixes Steam, Lutris, Bottles, Heroic, PortProton, PlayOnLinux, Hydra
-- **Execução de trainers** no Wine/Proton correto (detecta o binário wine automaticamente)
-- **Seleção de prefixo**: selecione um prefixo e um trainer para executar diretamente na aba Trainer/CE
-- **Cheat Engine integrado**: defina o caminho do executável do Cheat Engine (Windows) e execute-o no prefixo selecionado
-- **Backup e restore**: salve backups de prefixes e restaure quando necessário
-- **Salvar como Prefixo Padrão**: exporte um prefixo como zip em `~/.config/trainer_manager/built_prefixes/`
-- **Merge de prefixes**: instale um prefixo padrão sobre um prefixo existente, preservando dados
-- **Ocultar prefixos**: oculte prefixos indesejados da lista
-- **Remover prefixos**: remova prefixos do disco permanentemente
-- **WeMod integrado**: download da versão mais recente, instalação via prefixo pré-configurado, login compartilhado entre prefixes, start/stop
-- **Menu de contexto**: copiar WINEPREFIX, abrir pasta, backup, restaurar, salvar como padrão, ocultar, remover
+## Features
 
-## Launchers suportados
+- **Automatic detection** of games and prefixes across Steam, Lutris, Bottles, Heroic, PortProton, PlayOnLinux, and Hydra
+- **Run trainers** using the correct Wine/Proton setup (auto-detects the Wine binary)
+- **Prefix selection**: pick a prefix and a trainer to execute directly from the Trainer/CE tab
+- **Integrated Cheat Engine**: configure your Cheat Engine (Windows) executable path and launch it directly into the selected prefix
+- **Backup & Restore**: create prefix backups and restore them whenever needed
+- **Save as Standard Prefix**: export a prefix as a `.zip` archive to `~/.config/trainer_manager/built_prefixes/`
+- **Prefix Merging**: install a standard prefix on top of an existing prefix while preserving game data
+- **Hide prefixes**: hide unwanted or unneeded prefixes from the list
+- **Delete prefixes**: permanently remove prefixes from disk
+- **Integrated WeMod**: download the latest version, install using a pre-configured prefix, shared login across prefixes, start/stop
+- **Context menu**: copy WINEPREFIX, open directory, backup, restore, save as standard, hide, remove
+- **Multi-language support**: English (default), Portuguese, and Spanish selectable in Settings
 
-| Launcher | Detecção |
+## Supported Launchers
+
+| Launcher | Detection Method |
 |---|---|
 | **Steam** | `protontricks -l` + `compatdata/<appid>/pfx` |
-| **Lutris** | `~/.config/lutris/games/*.json` (campo `wine_prefix`) |
-| **Bottles** | `~/.var/app/com.usebottles.bottles/data/bottles/` ou `~/.local/share/bottles/` |
-| **Heroic Games Launcher** | `~/.config/heroic/config.json` + `GamesConfig/*.json` (Flatpak incluso) |
-| **PortProton** | `~/.var/app/ru.linux_gaming.PortProton/data/prefixes/` ou `~/PortProton/prefixes/` |
+| **Lutris** | `~/.config/lutris/games/*.json` (`wine_prefix` field) |
+| **Bottles** | `~/.var/app/com.usebottles.bottles/data/bottles/` or `~/.local/share/bottles/` |
+| **Heroic Games Launcher** | `~/.config/heroic/config.json` + `GamesConfig/*.json` (Flatpak included) |
+| **PortProton** | `~/.var/app/ru.linux_gaming.PortProton/data/prefixes/` or `~/PortProton/prefixes/` |
 | **PlayOnLinux** | `~/.PlayOnLinux/wineprefix/` |
 | **Hydra** | `~/.config/hydralauncher/wine-prefixes/<appid>/` |
-| **WeMod** | Download + instalação integrada com `.desktop` próprio |
-| **Custom (Não-Steam)** | `~/.wine`, `~/Games/`, `~/wineprefixes/`, ou adicionados manualmente |
+| **WeMod** | Download + integrated installation with dedicated `.desktop` |
+| **Custom (Non-Steam)** | `~/.wine`, `~/Games/`, `~/wineprefixes/`, or manually added prefixes |
 
-## Distros Linux suportadas
+## Supported Linux Distributions
 
-Funciona em **qualquer distribuição Linux** com:
+Works on **any Linux distribution** with:
 
 - **Python 3.10+**
-- **PyQt6** (`python-pyqt6` no Arch, `python3-pyqt6` no Debian/Ubuntu, etc.)
-- **protontricks** (para detecção Steam)
-- **Wine / Proton** (para executar os trainers)
+- **PyQt6** (`python-pyqt6` on Arch, `python3-pyqt6` on Debian/Ubuntu, etc.)
+- **protontricks** (for Steam detection)
+- **Wine / Proton** (to execute trainers)
 
-Testado em: **CachyOS (Arch Linux)**.
+Tested on: **CachyOS (Arch Linux)**.
 
-### Dependências (Arch Linux)
+### Dependencies (Arch Linux)
 
 ```bash
 sudo pacman -S python-pyqt6 protontricks wine
 ```
 
-### Dependências (Debian/Ubuntu)
+### Dependencies (Debian/Ubuntu)
 
 ```bash
 sudo apt install python3-pyqt6 protontricks wine
 ```
 
-### Dependências (Fedora)
+### Dependencies (Fedora)
 
 ```bash
 sudo dnf install python3-qt6 protontricks wine
 ```
 
-## Instalação
+## Installation
 
 ```bash
-# Clone ou copie os arquivos
-cd Linux\ Trainer\ Manager/
+# Clone or extract repository files
+cd Action-Shark/
 
-# Instale as dependências Python
+# Install Python dependencies
 pip install -r requirements.txt
 
-# Execute diretamente
+# Run directly
 python3 trainer_manager.py
 ```
 
-### Instalação com atalhos (recomendado)
+### Installation with Desktop Shortcuts (Recommended)
 
 ```bash
 ./install.sh
 ```
 
-O script `install.sh` instala o atalho no menu de aplicações (`~/.local/share/applications/`) e opcionalmente no desktop, ajustando automaticamente o caminho do executável para a pasta atual.
+The `install.sh` script creates a desktop entry in your applications menu (`~/.local/share/applications/`) and optionally on your desktop, automatically resolving the absolute path to your current directory.
 
-### Desinstalação
+### Uninstallation
 
 ```bash
 ./uninstall.sh
 ```
 
-Remove os atalhos do menu e desktop, com opção de apagar a pasta de configuração e cache.
+Removes desktop and menu shortcuts, with an option to clean up configuration and cache directories.
 
-## Estrutura
+## Project Structure
 
 ```
 Action Shark/
-├── trainer_manager.py      # Interface gráfica principal (PyQt6)
-├── wemod_manager.py        # Gerenciamento do WeMod (download, instalação, start/stop)
-├── wemod_built_prefix.py   # Gerenciamento de prefixes built (merge, download, scan)
-├── trainer_manager.desktop # Atalho de menu (.desktop)
-├── install.sh              # Script de instalação (atalhos menu + desktop)
-├── uninstall.sh            # Script de desinstalação
-├── requirements.txt        # Dependências Python
-├── LICENSE                 # Licença de uso (Não-Comercial)
+├── trainer_manager.py      # Main graphical interface (PyQt6)
+├── ui_components.py        # UI dialogs, banners, and components
+├── i18n.py                 # Multi-language support (EN, PT, ES)
+├── wemod_manager.py        # WeMod management (download, installation, start/stop)
+├── wemod_built_prefix.py   # Pre-configured prefixes (merge, download, scan)
+├── install.sh              # Installation script (menu + desktop shortcuts)
+├── uninstall.sh            # Uninstallation script
+├── requirements.txt        # Python dependencies
+├── LICENSE                 # License (Non-Commercial)
 └── README.md
 ```
 
-### Prefixos Built
+### Built Prefixes
 
-Prefixos padrão salvos como `.zip` em `~/.config/trainer_manager/built_prefixes/`. Usados para instalar ou restaurar prefixes rapidamente sem download.
+Standard prefixes saved as `.zip` archives under `~/.config/trainer_manager/built_prefixes/`. Used to install or restore prefixes rapidly without downloading.
 
-## Configuração
+## Configuration
 
-O config fica em `~/.config/trainer_manager/config.json`:
+Configuration is stored in `~/.config/trainer_manager/config.json`:
 
 ```json
 {
-  "trainers_folder": "/caminho/para/trainers",
+  "language": "en",
+  "trainers_folder": "/path/to/trainers",
   "custom_prefixes": [
-    { "name": "Meu Jogo", "wineprefix": "/caminho/do/prefixo" }
+    { "name": "My Game", "wineprefix": "/path/to/prefix" }
   ],
   "hidden_prefixes": []
 }
 ```
 
+Supported languages: `"en"` (English - default), `"pt"` (Português), `"es"` (Español).
+
 ## WeMod
 
-**WeMod** é uma plataforma que reúne milhares de trainers para jogos PC em um só lugar, com interface unificada e atualizações automáticas.
+**WeMod** brings thousands of trainers for PC games into a single application, featuring a unified interface and automatic updates.
 
-A integração utiliza um **prefixo Wine/Proton pré-configurado** (disponível nas releases do repositório) com todas as dependências já instaladas (.NET 4.8, DXVK, VKD3D). Basta baixar o prefixo e importar pelo Action Shark. O login é compartilhado entre prefixes via symlinks.
+The integration uses a **pre-configured Wine/Proton prefix** (available in the repository releases) with all necessary dependencies pre-installed (.NET 4.8, DXVK, VKD3D). Simply download the prefix and import it via Action Shark. User login is shared across prefixes through symlinks.
 
-> **Nota:** O WeMod requer uma conta gratuita ou **Pro** (paga) para funcionar. Crie uma em [wemod.com](https://www.wemod.com).
+> **Note:** WeMod requires a free or **Pro** (paid) account. Create an account at [wemod.com](https://www.wemod.com).
 
-> **Nota sobre merge em prefixes com launchers secundários (EA App, Ubisoft Connect, etc.):** Ao mesclar o prefixo WeMod em um prefixo que já possui launchers como EA App, o WeMod funcionará corretamente, mas o laucher secundário pode precisar ser reparado (re-executar o installer do laucher). Recomenda-se fazer backup do prefixo antes do merge.
+> **Note regarding merge on prefixes with secondary launchers (EA App, Ubisoft Connect, etc.):** When merging the WeMod prefix into a prefix containing secondary launchers like EA App, WeMod will function properly, but the secondary launcher might require repair (re-running its launcher installer). It is recommended to back up the prefix prior to merging.
 
-## Licença
+## License
 
-Este projeto está licenciado sob uma licença **Custom Não-Comercial** (baseada no MIT).
+This project is licensed under a **Custom Non-Commercial License** (based on MIT).
 
-Permitido:
-- Uso pessoal, educacional e de pesquisa
-- Modificação e distribuição do código
+Allowed:
+- Personal, educational, and research use
+- Modification and redistribution of the source code
 
-Vedado:
-- Uso comercial (venda, licenciamento, incorporação em produtos comerciais, serviços remunerados)
+Prohibited:
+- Commercial use (selling, licensing, embedding in commercial products, paid services)
 
-Consulte o arquivo `LICENSE` para detalhes.
+See `LICENSE` for details.
 
-## Créditos
+## Credits
 
-- **Criador:** RCarpetaBR
-- **OpenCode:** [opencode.ai](https://opencode.ai) — assistente IA
-- **Modelo:** DeepSeek V4 Flash Free
-- **WeMod:** [wemod.com](https://www.wemod.com) — plataforma de trainers
-- **wemod-launcher:** [DeckCheatz/wemod-launcher](https://github.com/DeckCheatz/wemod-launcher) — version.dll para Electron no Wine
+- **Creator:** RCarpetaBR
+- **OpenCode:** [opencode.ai](https://opencode.ai) — AI assistant
+- **Model:** DeepSeek V4 Flash Free
+- **WeMod:** [wemod.com](https://www.wemod.com) — trainer platform
+- **wemod-launcher:** [DeckCheatz/wemod-launcher](https://github.com/DeckCheatz/wemod-launcher) — version.dll for Electron on Wine

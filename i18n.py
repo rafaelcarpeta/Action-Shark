@@ -1,0 +1,774 @@
+"""
+i18n.py - Internationalization (i18n) module for Action Shark.
+Supports English ('en' - default), Portuguese ('pt'), and Spanish ('es').
+"""
+
+from typing import Dict, Any, Optional
+
+DEFAULT_LANGUAGE = 'en'
+
+SUPPORTED_LANGUAGES = {
+    'en': 'English',
+    'pt': 'Português',
+    'es': 'Español',
+}
+
+_current_language = DEFAULT_LANGUAGE
+
+TRANSLATIONS: Dict[str, Dict[str, str]] = {
+    # ─────────────────────────────────────────────────────────────────
+    # ENGLISH (Default)
+    # ─────────────────────────────────────────────────────────────────
+    'en': {
+        # App & Window
+        'app_title': 'Action Shark',
+        'search_placeholder': 'Filter by name, PID, or executable...',
+        'search_filter_tooltip': 'Filter / Quick Options',
+
+        # Navigation & Headers
+        'nav_active_processes': '⚡ Active Processes ({count})',
+        'nav_installed_prefixes': '📁 Installed Prefixes ({count})',
+        'col_pid': 'PID',
+        'col_game_exe': 'Game / Executable',
+        'col_env_runner': 'Environment / Runner',
+        'col_status': 'Status',
+        'col_game_prefix': 'Game / Prefix',
+        'col_source': 'Source',
+        'col_arch': 'Architecture',
+        'col_wemod': 'WeMod',
+
+        # Filter Chips
+        'chip_all': 'All',
+        'chip_steam': 'Steam',
+        'chip_heroic': 'Heroic',
+        'chip_lutris': 'Lutris',
+        'chip_bottles': 'Bottles',
+        'chip_custom': 'Custom',
+
+        # Status & Source
+        'status_running': 'Running',
+        'status_installed': '✓ Installed',
+        'status_not_installed': 'Not installed',
+        'source_custom': 'Custom',
+        'source_non_steam': 'Non-Steam',
+
+        # Window Controls Tooltips
+        'tooltip_refresh': 'Refresh list',
+        'tooltip_settings': 'Settings',
+        'tooltip_minimize': 'Minimize',
+        'tooltip_maximize': 'Maximize / Restore',
+        'tooltip_close': 'Close',
+
+        # Inspector - Game Banner
+        'banner_select_game': 'Select a Game',
+        'banner_unknown_game': 'Unknown Game',
+
+        # Inspector - WINEPREFIX
+        'label_wineprefix': 'WINEPREFIX',
+        'btn_copy': 'Copy',
+        'btn_open_folder': 'Open Folder',
+        'pfx_none_selected': 'No prefix selected',
+        'pfx_none_associated': 'No prefix associated',
+        'btn_add_to_list': '➕ Add to Prefix List',
+
+        # Inspector - Wine Version
+        'label_wine_version': 'Wine Version  ⓘ',
+        'tooltip_wine_version': 'Wine/Proton version in use for this prefix.',
+        'wv_none_selected': 'None selected',
+        'wv_not_detected': 'Not detected',
+        'wv_running_suffix': '(Running)',
+        'wv_binary_tooltip': 'Binary: {bin}',
+
+        # Inspector - Trainer & Launch
+        'placeholder_trainer_path': '/path/to/trainer.exe',
+        'btn_browse': 'Browse',
+        'btn_launch_trainer': 'Launch Trainer',
+
+        # Inspector - Quick Actions
+        'label_quick_actions': 'Quick Actions',
+        'btn_cheat_engine': ' Cheat Engine',
+        'btn_wemod_manager': ' WeMod Manager',
+        'btn_qa_open_folder': ' Open Folder',
+        'btn_logs': ' Logs',
+        'tooltip_logs': 'Open error/crash logs folder in app root',
+
+        # Quick Menu & Context Menu
+        'menu_add_prefix': 'Add Prefix...',
+        'menu_refresh_list': 'Refresh List',
+        'menu_show_hidden_prefixes': 'Show Hidden Prefixes',
+        'menu_open_logs': 'Open Logs Folder',
+        'menu_settings': 'Settings',
+        'menu_add_to_list': '➕ Add this Prefix to Prefix List',
+        'menu_open_pfx_folder': 'Open WINEPREFIX folder',
+        'menu_copy_pfx_path': 'Copy WINEPREFIX path',
+        'menu_launch_trainer': 'Launch Trainer (.exe)...',
+        'menu_wemod_manager': 'WeMod Manager...',
+        'menu_launch_ce': 'Launch Cheat Engine',
+        'menu_kill_process': 'End Process (Kill)',
+        'menu_save_as': 'Save as',
+        'menu_backup': 'Backup',
+        'menu_standard_prefix': 'Standard Prefix',
+        'menu_restore_backup': 'Restore Backup',
+        'menu_hide_prefix': 'Hide Prefix',
+        'menu_remove_prefix': 'Remove Prefix from Disk',
+
+        # Toasts
+        'toast_updating': 'Updating...',
+        'toast_list_updated': '✓ List updated.',
+        'toast_folder_opened': '✓ Folder opened: {name}',
+        'toast_pfx_copied': '✓ WINEPREFIX path copied to clipboard!',
+        'toast_prefix_added': '✓ Prefix added to list: {name}',
+        'toast_select_first': 'Select a game/prefix in the table first',
+        'toast_select_prefix_first': 'Select a prefix first',
+        'toast_select_valid_prefix': 'Select a valid prefix first',
+        'toast_pfx_invalid': 'WINEPREFIX not found or invalid',
+        'toast_trainer_launched': '✓ Trainer launched!',
+        'toast_trainer_failed': '✗ Failed to launch trainer: {error}',
+        'toast_ce_launched': '✓ Cheat Engine launched!',
+        'toast_ce_failed': '✗ Failed to launch Cheat Engine: {error}',
+        'toast_logs_opened': '✓ Logs folder opened',
+        'toast_logs_open_failed': '✗ Failed to open logs folder ({dir})',
+        'toast_crash_detected': '✗ Error/Crash detected! Log saved: {name}',
+        'log_issue_detected': 'Issue detected: log generated at {path}',
+        'toast_pfx_hidden': 'Prefix hidden',
+        'toast_pfx_deleted': '✓ Prefix deleted from disk',
+        'toast_processes_killed': '✓ {count} process(es) terminated in prefix',
+        'toast_no_processes': 'No processes running in this prefix',
+
+        # File Dialogs & Inputs
+        'dialog_select_trainer_exe': 'Select Trainer Executable',
+        'dialog_select_ce_exe': 'Select Cheat Engine Executable',
+        'dialog_filter_exe': 'Executables (*.exe);;All files (*)',
+        'dialog_select_pfx_dir': 'Select WINEPREFIX (folder containing drive_c/)',
+        'msg_ce_not_configured_title': 'Cheat Engine Not Configured',
+        'msg_ce_not_configured_body': 'The Cheat Engine executable has not been configured yet.\nDo you want to select the file now?',
+        'msg_add_to_list_title': 'Add to Prefix List',
+        'msg_add_to_list_prompt': 'Prefix name:',
+        'msg_already_in_list': 'This prefix is already in the prefix list.',
+        'msg_add_custom_pfx_title': 'Add Non-Steam Prefix',
+        'msg_add_custom_pfx_prompt': 'Game / prefix name:',
+        'msg_not_valid_pfx': 'The selected folder does not contain "drive_c".\nNot a valid WINEPREFIX.',
+        'msg_pfx_already_added': 'This prefix has already been added.',
+        'msg_pfx_not_exist': 'Prefix does not exist on disk.',
+        'msg_security_error_title': 'Security Error',
+        'msg_security_error_body': 'Operation cancelled: target folder ({target}) is a system root or library directory.',
+        'msg_confirm_title': 'Confirm',
+        'msg_confirm_delete_pfx': 'Are you sure you want to permanently delete the prefix folder?\n{target}',
+        'msg_error_delete_pfx': 'Could not delete prefix:\n{error}',
+        'msg_pfx_dir_not_found': 'Prefix folder not found.',
+        'msg_save_backup_title': 'Save Backup',
+        'msg_save_backup_prompt': 'Backup name:',
+        'msg_overwrite_title': 'Overwrite',
+        'msg_overwrite_prompt': 'The file already exists:\n{dst}\nOverwrite?',
+        'msg_save_std_pfx_title': 'Save as Standard Prefix',
+        'msg_save_std_pfx_prompt': 'Standard prefix name:',
+        'msg_no_backups_found': 'No backups found in this prefix.',
+        'msg_restore_backup_title': 'Restore Backup',
+        'msg_restore_backup_prompt': 'Select backup:',
+        'msg_confirm_restore_backup': 'Restore backup?\n{name}\n\nCurrent prefix files will be replaced.',
+
+        # Background Tasks & Progress Dialog
+        'task_preparing': 'Preparing…',
+        'task_compressing_files': 'Compressing files...',
+        'task_compressing_progress': 'Compressing... ({curr}/{total})',
+        'task_saving_backup_to': 'Saving backup to: {dst}',
+        'task_saving_std_to': 'Saving standard prefix to: {dst}',
+        'task_special_files_skipped': '{count} special file(s) skipped',
+        'task_completed': 'Completed!',
+        'task_backup_saved': 'Backup saved successfully: {dst}',
+        'task_std_pfx_saved': 'Standard prefix saved: {dst}',
+        'task_error': 'ERROR: {error}',
+        'task_killed_before_restore': '{count} process(es) terminated before restore',
+        'task_restoring_backup': 'Restoring backup: {name}',
+        'task_removing_current_pfx': 'Removing current prefix...',
+        'task_extracting_backup': 'Extracting backup...',
+        'task_backup_restored': 'Backup restored successfully!',
+        'btn_close': 'Close',
+
+        # Settings Dialog
+        'settings_window_title': 'Settings — Action Shark',
+        'settings_header': 'General Settings',
+        'settings_language_label': 'Language / Idioma:',
+        'settings_trainers_folder': 'Trainers Root Folder (.exe):',
+        'settings_trainers_placeholder': 'E.g.: /home/user/Games/Trainers...',
+        'settings_browse': 'Browse…',
+        'settings_browse_trainers_tooltip': 'Select the trainers folder',
+        'settings_ce_path': 'Cheat Engine Executable Path (.exe):',
+        'settings_ce_placeholder': 'E.g.: cheatengine-x86_64-SSE4-AVX2.exe',
+        'settings_browse_ce_tooltip': 'Select Cheat Engine executable',
+        'settings_hidden_prefixes': 'Hidden Prefixes:',
+        'settings_unhide_btn': 'Restore / Unhide Selected Prefix',
+        'settings_logs_folder': 'Error/Crash Logs Folder (App Root):',
+        'settings_open_logs_btn': 'Open Logs Folder',
+        'settings_open_logs_tooltip': 'Open logs folder in application root',
+        'settings_save_btn': 'Save',
+        'settings_cancel_btn': 'Cancel',
+        'settings_browse_trainers_title': 'Select Trainers Folder',
+        'settings_browse_ce_title': 'Select Cheat Engine Executable',
+
+        # WeMod Dialog
+        'wemod_dialog_title': 'WeMod Manager — {name}',
+        'wemod_title': 'WeMod Integration',
+        'wemod_prefix_label': 'Prefix: {prefix}',
+        'wemod_status_checking': 'Status: Checking...',
+        'wemod_status_prefix_missing': 'Prefix does not exist',
+        'wemod_status_running': '▶ Running in Prefix',
+        'wemod_status_installed': '● Installed in Prefix',
+        'wemod_status_not_installed': '○ Not Installed',
+        'wemod_btn_download': 'Download WeMod.exe',
+        'wemod_btn_clear_cache': 'Clear Cache',
+        'wemod_btn_install': 'Install WeMod Prefix',
+        'wemod_btn_start': '▶ Launch WeMod',
+        'wemod_btn_stop': '■ Stop WeMod',
+        'wemod_btn_uninstall': 'Uninstall',
+        'wemod_logs_header': 'Operation Logs:',
+        'wemod_clear_cache_title': 'Clear Cache',
+        'wemod_clear_cache_msg': 'This will remove the downloaded WeMod binaries and require a new download.',
+        'wemod_uninstall_title': 'Uninstall WeMod',
+        'wemod_uninstall_msg': 'Do you really want to uninstall WeMod from the prefix for {name}?',
+        'wemod_log_downloading': 'Downloading latest WeMod.exe...',
+        'wemod_log_download_success': '✓ WeMod.exe downloaded successfully.',
+        'wemod_log_download_error': '✗ Error downloading WeMod: {error}',
+        'wemod_log_clearing_cache': 'Clearing WeMod cache...',
+        'wemod_log_cache_cleared': '✓ WeMod cache cleared successfully.',
+        'wemod_log_clear_cache_error': '✗ Error clearing cache: {error}',
+        'wemod_log_installing_built': 'Starting pre-configured prefix installation in {prefix}...',
+        'wemod_log_configuring_symlinks': 'Configuring WeMod symlinks...',
+        'wemod_log_install_success': '✓ WeMod installed successfully in prefix!',
+        'wemod_log_install_failed': '✗ Failed to install pre-configured prefix.',
+        'wemod_log_unexpected_error': '✗ Unexpected error: {error}',
+        'wemod_log_starting': 'Launching WeMod...',
+        'wemod_log_crash': '✗ Error/Crash in WeMod: log saved in logs/{name}',
+        'wemod_log_started_pid': '✓ WeMod launched (PID {pid}).',
+        'wemod_log_not_started': '✗ WeMod failed to launch. Check logs folder for errors.',
+        'wemod_log_start_error': '✗ Error launching WeMod: {error}',
+        'wemod_log_stopping': 'Stopping WeMod...',
+        'wemod_log_stopped': '✓ WeMod stopped.',
+        'wemod_log_stop_error': '✗ Error stopping WeMod: {error}',
+        'wemod_log_uninstalling': 'Uninstalling WeMod...',
+        'wemod_log_uninstalled': '✓ WeMod uninstalled.',
+        'wemod_log_uninstall_error': '✗ Error uninstalling: {error}',
+    },
+
+    # ─────────────────────────────────────────────────────────────────
+    # PORTUGUESE
+    # ─────────────────────────────────────────────────────────────────
+    'pt': {
+        # App & Window
+        'app_title': 'Action Shark',
+        'search_placeholder': 'Filtrar por nome, PID ou executável...',
+        'search_filter_tooltip': 'Filtrar / Opções Rápidas',
+
+        # Navigation & Headers
+        'nav_active_processes': '⚡ Processos Ativos ({count})',
+        'nav_installed_prefixes': '📁 Prefixos Instalados ({count})',
+        'col_pid': 'PID',
+        'col_game_exe': 'Jogo / Executável',
+        'col_env_runner': 'Ambiente / Runner',
+        'col_status': 'Status',
+        'col_game_prefix': 'Jogo / Prefixo',
+        'col_source': 'Origem',
+        'col_arch': 'Arquitetura',
+        'col_wemod': 'WeMod',
+
+        # Filter Chips
+        'chip_all': 'Todos',
+        'chip_steam': 'Steam',
+        'chip_heroic': 'Heroic',
+        'chip_lutris': 'Lutris',
+        'chip_bottles': 'Bottles',
+        'chip_custom': 'Personalizados',
+
+        # Status & Source
+        'status_running': 'Rodando',
+        'status_installed': '✓ Instalado',
+        'status_not_installed': 'Não instalado',
+        'source_custom': 'Personalizado',
+        'source_non_steam': 'Não-Steam',
+
+        # Window Controls Tooltips
+        'tooltip_refresh': 'Atualizar lista',
+        'tooltip_settings': 'Configurações',
+        'tooltip_minimize': 'Minimizar',
+        'tooltip_maximize': 'Maximizar / Restaurar',
+        'tooltip_close': 'Fechar',
+
+        # Inspector - Game Banner
+        'banner_select_game': 'Selecione um Jogo',
+        'banner_unknown_game': 'Jogo Desconhecido',
+
+        # Inspector - WINEPREFIX
+        'label_wineprefix': 'WINEPREFIX',
+        'btn_copy': 'Copiar',
+        'btn_open_folder': 'Abrir Pasta',
+        'pfx_none_selected': 'Nenhum prefixo selecionado',
+        'pfx_none_associated': 'Nenhum prefixo associado',
+        'btn_add_to_list': '➕ Adicionar à Lista de Prefixos',
+
+        # Inspector - Wine Version
+        'label_wine_version': 'Wine Version  ⓘ',
+        'tooltip_wine_version': 'Versão do Wine/Proton em uso para este prefixo.',
+        'wv_none_selected': 'Nenhum selecionado',
+        'wv_not_detected': 'Não detectado',
+        'wv_running_suffix': '(Em execução)',
+        'wv_binary_tooltip': 'Binário: {bin}',
+
+        # Inspector - Trainer & Launch
+        'placeholder_trainer_path': '/caminho/para/trainer.exe',
+        'btn_browse': 'Procurar',
+        'btn_launch_trainer': 'Iniciar Trainer',
+
+        # Inspector - Quick Actions
+        'label_quick_actions': 'Ações Rápidas',
+        'btn_cheat_engine': ' Cheat Engine',
+        'btn_wemod_manager': ' Gerenciador WeMod',
+        'btn_qa_open_folder': ' Abrir Pasta',
+        'btn_logs': ' Logs',
+        'tooltip_logs': 'Abrir pasta de logs de erros/crashes na raiz do app',
+
+        # Quick Menu & Context Menu
+        'menu_add_prefix': 'Adicionar Prefixo...',
+        'menu_refresh_list': 'Atualizar Lista',
+        'menu_show_hidden_prefixes': 'Mostrar Prefixos Ocultos',
+        'menu_open_logs': 'Abrir Pasta de Logs',
+        'menu_settings': 'Configurações',
+        'menu_add_to_list': '➕ Adicionar este Prefixo à Lista de Prefixos',
+        'menu_open_pfx_folder': 'Abrir pasta do WINEPREFIX',
+        'menu_copy_pfx_path': 'Copiar caminho WINEPREFIX',
+        'menu_launch_trainer': 'Executar Trainer (.exe)...',
+        'menu_wemod_manager': 'Gerenciador WeMod...',
+        'menu_launch_ce': 'Iniciar Cheat Engine',
+        'menu_kill_process': 'Finalizar Processo (Kill)',
+        'menu_save_as': 'Salvar como',
+        'menu_backup': 'Backup',
+        'menu_standard_prefix': 'Prefixo Padrão',
+        'menu_restore_backup': 'Restaurar Backup',
+        'menu_hide_prefix': 'Ocultar Prefixo',
+        'menu_remove_prefix': 'Remover Prefixo do Disco',
+
+        # Toasts
+        'toast_updating': 'Atualizando...',
+        'toast_list_updated': '✓ Lista atualizada.',
+        'toast_folder_opened': '✓ Pasta aberta: {name}',
+        'toast_pfx_copied': '✓ Caminho do WINEPREFIX copiado!',
+        'toast_prefix_added': '✓ Prefixo adicionado à lista: {name}',
+        'toast_select_first': 'Selecione um jogo/prefixo na tabela primeiro',
+        'toast_select_prefix_first': 'Selecione um prefixo primeiro',
+        'toast_select_valid_prefix': 'Selecione um prefixo válido primeiro',
+        'toast_pfx_invalid': 'WINEPREFIX não encontrado ou inválido',
+        'toast_trainer_launched': '✓ Trainer iniciado!',
+        'toast_trainer_failed': '✗ Falha ao iniciar trainer: {error}',
+        'toast_ce_launched': '✓ Cheat Engine iniciado!',
+        'toast_ce_failed': '✗ Falha ao iniciar Cheat Engine: {error}',
+        'toast_logs_opened': '✓ Pasta de logs aberta',
+        'toast_logs_open_failed': '✗ Falha ao abrir pasta de logs ({dir})',
+        'toast_crash_detected': '✗ Erro/Crash detectado! Log salvo: {name}',
+        'log_issue_detected': 'Problema detectado: log gerado em {path}',
+        'toast_pfx_hidden': 'Prefixo ocultado',
+        'toast_pfx_deleted': '✓ Prefixo apagado do disco',
+        'toast_processes_killed': '✓ {count} processo(s) finalizado(s) no prefixo',
+        'toast_no_processes': 'Nenhum processo rodando neste prefixo',
+
+        # File Dialogs & Inputs
+        'dialog_select_trainer_exe': 'Selecionar Executável do Trainer',
+        'dialog_select_ce_exe': 'Selecionar Executável do Cheat Engine',
+        'dialog_filter_exe': 'Executáveis (*.exe);;Todos os arquivos (*)',
+        'dialog_select_pfx_dir': 'Selecionar WINEPREFIX (pasta que contém drive_c/)',
+        'msg_ce_not_configured_title': 'Cheat Engine Não Configurado',
+        'msg_ce_not_configured_body': 'O executável do Cheat Engine ainda não foi configurado.\nDeseja selecionar o arquivo agora?',
+        'msg_add_to_list_title': 'Adicionar à Lista de Prefixos',
+        'msg_add_to_list_prompt': 'Nome para o prefixo:',
+        'msg_already_in_list': 'Este prefixo já está na lista de prefixos.',
+        'msg_add_custom_pfx_title': 'Adicionar Prefixo Não-Steam',
+        'msg_add_custom_pfx_prompt': 'Nome do jogo / prefixo:',
+        'msg_not_valid_pfx': 'A pasta selecionada não contém "drive_c".\nNão é um WINEPREFIX válido.',
+        'msg_pfx_already_added': 'Este prefixo já foi adicionado.',
+        'msg_pfx_not_exist': 'Prefixo não existe no disco.',
+        'msg_security_error_title': 'Erro de Segurança',
+        'msg_security_error_body': 'Operação cancelada: a pasta alvo ({target}) é um diretório raiz ou de biblioteca do sistema.',
+        'msg_confirm_title': 'Confirmar',
+        'msg_confirm_delete_pfx': 'Tem certeza que deseja apagar permanentemente a pasta do prefixo?\n{target}',
+        'msg_error_delete_pfx': 'Não foi possível apagar o prefixo:\n{error}',
+        'msg_pfx_dir_not_found': 'Pasta do prefixo não encontrada.',
+        'msg_save_backup_title': 'Salvar Backup',
+        'msg_save_backup_prompt': 'Nome do backup:',
+        'msg_overwrite_title': 'Sobrescrever',
+        'msg_overwrite_prompt': 'O arquivo já existe:\n{dst}\nSobrescrever?',
+        'msg_save_std_pfx_title': 'Salvar como Prefixo Padrão',
+        'msg_save_std_pfx_prompt': 'Nome do prefixo padrão:',
+        'msg_no_backups_found': 'Nenhum backup encontrado neste prefixo.',
+        'msg_restore_backup_title': 'Restaurar Backup',
+        'msg_restore_backup_prompt': 'Selecione o backup:',
+        'msg_confirm_restore_backup': 'Restaurar backup?\n{name}\n\nOs arquivos atuais do prefixo serão substituídos.',
+
+        # Background Tasks & Progress Dialog
+        'task_preparing': 'Preparando…',
+        'task_compressing_files': 'Compactando arquivos...',
+        'task_compressing_progress': 'Compactando... ({curr}/{total})',
+        'task_saving_backup_to': 'Salvando backup em: {dst}',
+        'task_saving_std_to': 'Salvando prefixo padrão em: {dst}',
+        'task_special_files_skipped': '{count} arquivo(s) especial(is) ignorado(s)',
+        'task_completed': 'Concluído!',
+        'task_backup_saved': 'Backup salvo com sucesso: {dst}',
+        'task_std_pfx_saved': 'Prefixo padrão salvo: {dst}',
+        'task_error': 'ERRO: {error}',
+        'task_killed_before_restore': '{count} processo(s) finalizado(s) antes da restauração',
+        'task_restoring_backup': 'Restaurando backup: {name}',
+        'task_removing_current_pfx': 'Removendo prefixo atual...',
+        'task_extracting_backup': 'Extraindo backup...',
+        'task_backup_restored': 'Backup restaurado com sucesso!',
+        'btn_close': 'Fechar',
+
+        # Settings Dialog
+        'settings_window_title': 'Configurações — Action Shark',
+        'settings_header': 'Configurações Gerais',
+        'settings_language_label': 'Idioma / Language:',
+        'settings_trainers_folder': 'Pasta Raiz de Trainers (.exe):',
+        'settings_trainers_placeholder': 'Ex.: /home/user/Games/Trainers...',
+        'settings_browse': 'Procurar…',
+        'settings_browse_trainers_tooltip': 'Selecionar a pasta de trainers',
+        'settings_ce_path': 'Caminho do Executável do Cheat Engine (.exe):',
+        'settings_ce_placeholder': 'Ex.: cheatengine-x86_64-SSE4-AVX2.exe',
+        'settings_browse_ce_tooltip': 'Selecionar o executável do Cheat Engine',
+        'settings_hidden_prefixes': 'Prefixos Ocultos:',
+        'settings_unhide_btn': 'Restaurar / Reexibir Prefixo Selecionado',
+        'settings_logs_folder': 'Pasta de Logs de Erros/Crashes (Raiz do App):',
+        'settings_open_logs_btn': 'Abrir Pasta de Logs',
+        'settings_open_logs_tooltip': 'Abrir pasta de logs na raiz do aplicativo',
+        'settings_save_btn': 'Salvar',
+        'settings_cancel_btn': 'Cancelar',
+        'settings_browse_trainers_title': 'Selecionar Pasta de Trainers',
+        'settings_browse_ce_title': 'Selecionar Executável do Cheat Engine',
+
+        # WeMod Dialog
+        'wemod_dialog_title': 'Gerenciador WeMod — {name}',
+        'wemod_title': 'Integração WeMod',
+        'wemod_prefix_label': 'Prefixo: {prefix}',
+        'wemod_status_checking': 'Status: Verificando...',
+        'wemod_status_prefix_missing': 'Prefixo inexistente',
+        'wemod_status_running': '▶ Rodando no Prefixo',
+        'wemod_status_installed': '● Instalado no Prefixo',
+        'wemod_status_not_installed': '○ Não Instalado',
+        'wemod_btn_download': 'Baixar WeMod.exe',
+        'wemod_btn_clear_cache': 'Limpar Cache',
+        'wemod_btn_install': 'Instalar Prefixo WeMod',
+        'wemod_btn_start': '▶ Iniciar WeMod',
+        'wemod_btn_stop': '■ Parar WeMod',
+        'wemod_btn_uninstall': 'Desinstalar',
+        'wemod_logs_header': 'Logs de Operação:',
+        'wemod_clear_cache_title': 'Limpar Cache',
+        'wemod_clear_cache_msg': 'Isso removerá os binários baixados do WeMod e exigirá um novo download.',
+        'wemod_uninstall_title': 'Desinstalar WeMod',
+        'wemod_uninstall_msg': 'Deseja realmente desinstalar o WeMod do prefixo de {name}?',
+        'wemod_log_downloading': 'Baixando WeMod.exe mais recente...',
+        'wemod_log_download_success': '✓ WeMod.exe baixado com sucesso.',
+        'wemod_log_download_error': '✗ Erro ao baixar WeMod: {error}',
+        'wemod_log_clearing_cache': 'Limpando cache do WeMod...',
+        'wemod_log_cache_cleared': '✓ Cache do WeMod limpo com sucesso.',
+        'wemod_log_clear_cache_error': '✗ Erro ao limpar cache: {error}',
+        'wemod_log_installing_built': 'Iniciando instalação de prefixo pré-configurado em {prefix}...',
+        'wemod_log_configuring_symlinks': 'Configurando symlinks do WeMod...',
+        'wemod_log_install_success': '✓ WeMod instalado com sucesso no prefixo!',
+        'wemod_log_install_failed': '✗ Falha na instalação do prefixo pré-configurado.',
+        'wemod_log_unexpected_error': '✗ Erro inesperado: {error}',
+        'wemod_log_starting': 'Iniciando WeMod...',
+        'wemod_log_crash': '✗ Erro/Crash no WeMod: log salvo em logs/{name}',
+        'wemod_log_started_pid': '✓ WeMod iniciado (PID {pid}).',
+        'wemod_log_not_started': '✗ WeMod não iniciou. Verifique a pasta logs se houve falha.',
+        'wemod_log_start_error': '✗ Erro ao iniciar WeMod: {error}',
+        'wemod_log_stopping': 'Parando WeMod...',
+        'wemod_log_stopped': '✓ WeMod finalizado.',
+        'wemod_log_stop_error': '✗ Erro ao parar WeMod: {error}',
+        'wemod_log_uninstalling': 'Desinstalando WeMod...',
+        'wemod_log_uninstalled': '✓ WeMod desinstalado.',
+        'wemod_log_uninstall_error': '✗ Erro na desinstalação: {error}',
+    },
+
+    # ─────────────────────────────────────────────────────────────────
+    # SPANISH
+    # ─────────────────────────────────────────────────────────────────
+    'es': {
+        # App & Window
+        'app_title': 'Action Shark',
+        'search_placeholder': 'Filtrar por nombre, PID o ejecutable...',
+        'search_filter_tooltip': 'Filtrar / Opciones Rápidas',
+
+        # Navigation & Headers
+        'nav_active_processes': '⚡ Procesos Activos ({count})',
+        'nav_installed_prefixes': '📁 Prefijos Instalados ({count})',
+        'col_pid': 'PID',
+        'col_game_exe': 'Juego / Ejecutable',
+        'col_env_runner': 'Entorno / Runner',
+        'col_status': 'Estado',
+        'col_game_prefix': 'Juego / Prefijo',
+        'col_source': 'Origen',
+        'col_arch': 'Arquitectura',
+        'col_wemod': 'WeMod',
+
+        # Filter Chips
+        'chip_all': 'Todos',
+        'chip_steam': 'Steam',
+        'chip_heroic': 'Heroic',
+        'chip_lutris': 'Lutris',
+        'chip_bottles': 'Bottles',
+        'chip_custom': 'Personalizados',
+
+        # Status & Source
+        'status_running': 'En ejecución',
+        'status_installed': '✓ Instalado',
+        'status_not_installed': 'No instalado',
+        'source_custom': 'Personalizado',
+        'source_non_steam': 'No Steam',
+
+        # Window Controls Tooltips
+        'tooltip_refresh': 'Actualizar lista',
+        'tooltip_settings': 'Configuración',
+        'tooltip_minimize': 'Minimizar',
+        'tooltip_maximize': 'Maximizar / Restaurar',
+        'tooltip_close': 'Cerrar',
+
+        # Inspector - Game Banner
+        'banner_select_game': 'Selecciona un Juego',
+        'banner_unknown_game': 'Juego Desconocido',
+
+        # Inspector - WINEPREFIX
+        'label_wineprefix': 'WINEPREFIX',
+        'btn_copy': 'Copiar',
+        'btn_open_folder': 'Abrir Carpeta',
+        'pfx_none_selected': 'Ningún prefijo seleccionado',
+        'pfx_none_associated': 'Ningún prefijo asociado',
+        'btn_add_to_list': '➕ Añadir a la Lista de Prefijos',
+
+        # Inspector - Wine Version
+        'label_wine_version': 'Wine Version  ⓘ',
+        'tooltip_wine_version': 'Versión de Wine/Proton en uso para este prefijo.',
+        'wv_none_selected': 'Ninguno seleccionado',
+        'wv_not_detected': 'No detectado',
+        'wv_running_suffix': '(En ejecución)',
+        'wv_binary_tooltip': 'Binario: {bin}',
+
+        # Inspector - Trainer & Launch
+        'placeholder_trainer_path': '/ruta/a/trainer.exe',
+        'btn_browse': 'Examinar',
+        'btn_launch_trainer': 'Iniciar Trainer',
+
+        # Inspector - Quick Actions
+        'label_quick_actions': 'Acciones Rápidas',
+        'btn_cheat_engine': ' Cheat Engine',
+        'btn_wemod_manager': ' Gestor WeMod',
+        'btn_qa_open_folder': ' Abrir Carpeta',
+        'btn_logs': ' Logs',
+        'tooltip_logs': 'Abrir carpeta de logs de errores/crashes en la raíz de la app',
+
+        # Quick Menu & Context Menu
+        'menu_add_prefix': 'Añadir Prefijo...',
+        'menu_refresh_list': 'Actualizar Lista',
+        'menu_show_hidden_prefixes': 'Mostrar Prefijos Ocultos',
+        'menu_open_logs': 'Abrir Carpeta de Logs',
+        'menu_settings': 'Configuración',
+        'menu_add_to_list': '➕ Añadir este Prefijo a la Lista de Prefijos',
+        'menu_open_pfx_folder': 'Abrir carpeta del WINEPREFIX',
+        'menu_copy_pfx_path': 'Copiar ruta del WINEPREFIX',
+        'menu_launch_trainer': 'Ejecutar Trainer (.exe)...',
+        'menu_wemod_manager': 'Gestor WeMod...',
+        'menu_launch_ce': 'Iniciar Cheat Engine',
+        'menu_kill_process': 'Terminar Proceso (Kill)',
+        'menu_save_as': 'Guardar como',
+        'menu_backup': 'Copia de Seguridad',
+        'menu_standard_prefix': 'Prefijo Estándar',
+        'menu_restore_backup': 'Restaurar Copia de Seguridad',
+        'menu_hide_prefix': 'Ocultar Prefijo',
+        'menu_remove_prefix': 'Eliminar Prefijo del Disco',
+
+        # Toasts
+        'toast_updating': 'Actualizando...',
+        'toast_list_updated': '✓ Lista actualizada.',
+        'toast_folder_opened': '✓ Carpeta abierta: {name}',
+        'toast_pfx_copied': '✓ ¡Ruta de WINEPREFIX copiada al portapapeles!',
+        'toast_prefix_added': '✓ Prefijo añadido a la lista: {name}',
+        'toast_select_first': 'Selecciona un juego/prefijo en la tabla primero',
+        'toast_select_prefix_first': 'Selecciona un prefijo primero',
+        'toast_select_valid_prefix': 'Selecciona un prefijo válido primero',
+        'toast_pfx_invalid': 'WINEPREFIX no encontrado o inválido',
+        'toast_trainer_launched': '✓ ¡Trainer iniciado!',
+        'toast_trainer_failed': '✗ Error al iniciar trainer: {error}',
+        'toast_ce_launched': '✓ ¡Cheat Engine iniciado!',
+        'toast_ce_failed': '✗ Error al iniciar Cheat Engine: {error}',
+        'toast_logs_opened': '✓ Carpeta de logs abierta',
+        'toast_logs_open_failed': '✗ Error al abrir carpeta de logs ({dir})',
+        'toast_crash_detected': '✗ ¡Error/Crash detectado! Log guardado: {name}',
+        'log_issue_detected': 'Problema detectado: log generado en {path}',
+        'toast_pfx_hidden': 'Prefijo ocultado',
+        'toast_pfx_deleted': '✓ Prefijo eliminado del disco',
+        'toast_processes_killed': '✓ {count} proceso(s) terminado(s) en el prefijo',
+        'toast_no_processes': 'Ningún proceso ejecutándose en este prefijo',
+
+        # File Dialogs & Inputs
+        'dialog_select_trainer_exe': 'Seleccionar Ejecutable del Trainer',
+        'dialog_select_ce_exe': 'Seleccionar Ejecutable de Cheat Engine',
+        'dialog_filter_exe': 'Ejecutables (*.exe);;Todos los archivos (*)',
+        'dialog_select_pfx_dir': 'Seleccionar WINEPREFIX (carpeta que contiene drive_c/)',
+        'msg_ce_not_configured_title': 'Cheat Engine No Configurado',
+        'msg_ce_not_configured_body': 'El ejecutable de Cheat Engine aún no está configurado.\n¿Deseas seleccionar el archivo ahora?',
+        'msg_add_to_list_title': 'Añadir a la Lista de Prefijos',
+        'msg_add_to_list_prompt': 'Nombre para el prefijo:',
+        'msg_already_in_list': 'Este prefijo ya está en la lista de prefijos.',
+        'msg_add_custom_pfx_title': 'Añadir Prefijo No Steam',
+        'msg_add_custom_pfx_prompt': 'Nombre del juego / prefijo:',
+        'msg_not_valid_pfx': 'La carpeta seleccionada no contiene "drive_c".\nNo es un WINEPREFIX válido.',
+        'msg_pfx_already_added': 'Este prefijo ya ha sido añadido.',
+        'msg_pfx_not_exist': 'El prefijo no existe en el disco.',
+        'msg_security_error_title': 'Error de Seguridad',
+        'msg_security_error_body': 'Operación cancelada: la carpeta destino ({target}) es un directorio raíz o del sistema.',
+        'msg_confirm_title': 'Confirmar',
+        'msg_confirm_delete_pfx': '¿Estás seguro de que deseas eliminar permanentemente la carpeta del prefijo?\n{target}',
+        'msg_error_delete_pfx': 'No se pudo eliminar el prefijo:\n{error}',
+        'msg_pfx_dir_not_found': 'Carpeta del prefijo no encontrada.',
+        'msg_save_backup_title': 'Guardar Copia de Seguridad',
+        'msg_save_backup_prompt': 'Nombre de la copia de seguridad:',
+        'msg_overwrite_title': 'Sobrescribir',
+        'msg_overwrite_prompt': 'El archivo ya existe:\n{dst}\n¿Sobrescribir?',
+        'msg_save_std_pfx_title': 'Guardar como Prefijo Estándar',
+        'msg_save_std_pfx_prompt': 'Nombre del prefijo estándar:',
+        'msg_no_backups_found': 'No se encontraron copias de seguridad en este prefijo.',
+        'msg_restore_backup_title': 'Restaurar Copia de Seguridad',
+        'msg_restore_backup_prompt': 'Selecciona la copia de seguridad:',
+        'msg_confirm_restore_backup': '¿Restaurar copia de seguridad?\n{name}\n\nLos archivos actuales del prefijo serán reemplazados.',
+
+        # Background Tasks & Progress Dialog
+        'task_preparing': 'Preparando…',
+        'task_compressing_files': 'Comprimiendo archivos...',
+        'task_compressing_progress': 'Comprimiendo... ({curr}/{total})',
+        'task_saving_backup_to': 'Guardando copia de seguridad en: {dst}',
+        'task_saving_std_to': 'Guardando prefijo estándar en: {dst}',
+        'task_special_files_skipped': '{count} archivo(s) especial(es) ignorado(s)',
+        'task_completed': '¡Completado!',
+        'task_backup_saved': 'Copia de seguridad guardada con éxito: {dst}',
+        'task_std_pfx_saved': 'Prefijo estándar guardado: {dst}',
+        'task_error': 'ERROR: {error}',
+        'task_killed_before_restore': '{count} proceso(s) terminado(s) antes de la restauración',
+        'task_restoring_backup': 'Restaurando copia de seguridad: {name}',
+        'task_removing_current_pfx': 'Eliminando prefijo actual...',
+        'task_extracting_backup': 'Extrayendo copia de seguridad...',
+        'task_backup_restored': '¡Copia de seguridad restaurada con éxito!',
+        'btn_close': 'Cerrar',
+
+        # Settings Dialog
+        'settings_window_title': 'Configuración — Action Shark',
+        'settings_header': 'Configuración General',
+        'settings_language_label': 'Idioma / Language:',
+        'settings_trainers_folder': 'Carpeta Raíz de Trainers (.exe):',
+        'settings_trainers_placeholder': 'Ej.: /home/user/Games/Trainers...',
+        'settings_browse': 'Examinar…',
+        'settings_browse_trainers_tooltip': 'Seleccionar la carpeta de trainers',
+        'settings_ce_path': 'Ruta del Ejecutable de Cheat Engine (.exe):',
+        'settings_ce_placeholder': 'Ej.: cheatengine-x86_64-SSE4-AVX2.exe',
+        'settings_browse_ce_tooltip': 'Seleccionar el ejecutable de Cheat Engine',
+        'settings_hidden_prefixes': 'Prefijos Ocultos:',
+        'settings_unhide_btn': 'Restaurar / Mostrar Prefijo Seleccionado',
+        'settings_logs_folder': 'Carpeta de Logs de Errores/Crashes (Raíz de la App):',
+        'settings_open_logs_btn': 'Abrir Carpeta de Logs',
+        'settings_open_logs_tooltip': 'Abrir carpeta de logs en la raíz de la aplicación',
+        'settings_save_btn': 'Guardar',
+        'settings_cancel_btn': 'Cancelar',
+        'settings_browse_trainers_title': 'Seleccionar Carpeta de Trainers',
+        'settings_browse_ce_title': 'Seleccionar Ejecutable de Cheat Engine',
+
+        # WeMod Dialog
+        'wemod_dialog_title': 'Gestor WeMod — {name}',
+        'wemod_title': 'Integración WeMod',
+        'wemod_prefix_label': 'Prefijo: {prefix}',
+        'wemod_status_checking': 'Estado: Comprobando...',
+        'wemod_status_prefix_missing': 'Prefijo inexistente',
+        'wemod_status_running': '▶ En ejecución en el Prefijo',
+        'wemod_status_installed': '● Instalado en el Prefijo',
+        'wemod_status_not_installed': '○ No Instalado',
+        'wemod_btn_download': 'Descargar WeMod.exe',
+        'wemod_btn_clear_cache': 'Limpiar Caché',
+        'wemod_btn_install': 'Instalar Prefijo WeMod',
+        'wemod_btn_start': '▶ Iniciar WeMod',
+        'wemod_btn_stop': '■ Detener WeMod',
+        'wemod_btn_uninstall': 'Desinstalar',
+        'wemod_logs_header': 'Logs de Operación:',
+        'wemod_clear_cache_title': 'Limpiar Caché',
+        'wemod_clear_cache_msg': 'Esto eliminará los binarios descargados de WeMod y requerirá una nueva descarga.',
+        'wemod_uninstall_title': 'Desinstalar WeMod',
+        'wemod_uninstall_msg': '¿Realmente deseas desinstalar WeMod del prefijo para {name}?',
+        'wemod_log_downloading': 'Descargando WeMod.exe más reciente...',
+        'wemod_log_download_success': '✓ WeMod.exe descargado con éxito.',
+        'wemod_log_download_error': '✗ Error al descargar WeMod: {error}',
+        'wemod_log_clearing_cache': 'Limpiando caché de WeMod...',
+        'wemod_log_cache_cleared': '✓ Caché de WeMod limpiada con éxito.',
+        'wemod_log_clear_cache_error': '✗ Error al limpiar caché: {error}',
+        'wemod_log_installing_built': 'Iniciando instalación del prefijo preconfigurado en {prefix}...',
+        'wemod_log_configuring_symlinks': 'Configurando enlaces simbólicos de WeMod...',
+        'wemod_log_install_success': '✓ ¡WeMod instalado con éxito en el prefijo!',
+        'wemod_log_install_failed': '✗ Error en la instalación del prefijo preconfigurado.',
+        'wemod_log_unexpected_error': '✗ Error inesperado: {error}',
+        'wemod_log_starting': 'Iniciando WeMod...',
+        'wemod_log_crash': '✗ Error/Crash en WeMod: log guardado en logs/{name}',
+        'wemod_log_started_pid': '✓ WeMod iniciado (PID {pid}).',
+        'wemod_log_not_started': '✗ WeMod no inició. Comprueba la carpeta logs para ver fallos.',
+        'wemod_log_start_error': '✗ Error al iniciar WeMod: {error}',
+        'wemod_log_stopping': 'Deteniendo WeMod...',
+        'wemod_log_stopped': '✓ WeMod finalizado.',
+        'wemod_log_stop_error': '✗ Error al detener WeMod: {error}',
+        'wemod_log_uninstalling': 'Desinstalando WeMod...',
+        'wemod_log_uninstalled': '✓ WeMod desinstalado.',
+        'wemod_log_uninstall_error': '✗ Error en la desinstalación: {error}',
+    }
+}
+
+
+def get_language() -> str:
+    """Returns the currently active language code ('en', 'pt', or 'es')."""
+    return _current_language
+
+
+def set_language(lang_code: Optional[str]) -> str:
+    """Sets the active language code. Defaults to 'en' if invalid."""
+    global _current_language
+    if lang_code and lang_code.lower() in SUPPORTED_LANGUAGES:
+        _current_language = lang_code.lower()
+    else:
+        _current_language = DEFAULT_LANGUAGE
+    return _current_language
+
+
+def init_language(lang_code: Optional[str] = None) -> str:
+    """Initializes the language system with the provided language code or default ('en')."""
+    return set_language(lang_code)
+
+
+def get_supported_languages() -> Dict[str, str]:
+    """Returns a dict of supported language codes to display names."""
+    return dict(SUPPORTED_LANGUAGES)
+
+
+def t(key: str, **kwargs: Any) -> str:
+    """
+    Translates a key into the active language with optional format kwargs.
+    Falls back to English ('en') if missing, then to Portuguese ('pt'), then to the key itself.
+    """
+    lang_dict = TRANSLATIONS.get(_current_language, {})
+    text = lang_dict.get(key)
+
+    if text is None and _current_language != DEFAULT_LANGUAGE:
+        text = TRANSLATIONS.get(DEFAULT_LANGUAGE, {}).get(key)
+
+    if text is None and _current_language != 'pt':
+        text = TRANSLATIONS.get('pt', {}).get(key)
+
+    if text is None:
+        text = key
+
+    if kwargs:
+        try:
+            return text.format(**kwargs)
+        except Exception:
+            return text
+    return text
+
+
+# Convenient alias
+tr = t
