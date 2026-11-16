@@ -101,14 +101,6 @@ pip install -r requirements.txt
 python3 trainer_manager.py
 ```
 
-### Instalación con accesos directos (desde la carpeta clonada)
-
-```bash
-./install.sh
-```
-
-El script `install.sh` instala el acceso directo en el menú de aplicaciones (`~/.local/share/applications/`) y opcionalmente en el escritorio, configurando automáticamente la ruta al ejecutable.
-
 ### Desinstalación
 
 ```bash

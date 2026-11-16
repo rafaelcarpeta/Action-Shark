@@ -101,14 +101,6 @@ pip install -r requirements.txt
 python3 trainer_manager.py
 ```
 
-### Desktop Shortcuts (Local Clone)
-
-```bash
-./install.sh
-```
-
-The `install.sh` script creates a desktop entry in your applications menu (`~/.local/share/applications/`) and optionally on your desktop, automatically resolving the absolute path to the application.
-
 ### Uninstallation
 
 ```bash

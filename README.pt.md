@@ -101,14 +101,6 @@ pip install -r requirements.txt
 python3 trainer_manager.py
 ```
 
-### Instalação com atalhos (na pasta clonada)
-
-```bash
-./install.sh
-```
-
-O script `install.sh` instala o atalho no menu de aplicações (`~/.local/share/applications/`) e opcionalmente no desktop, ajustando automaticamente o caminho do executável.
-
 ### Desinstalação
 
 ```bash
