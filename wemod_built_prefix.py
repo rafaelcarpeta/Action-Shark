@@ -52,6 +52,7 @@ def _bp_parse_version(version_str: str) -> Optional[list]:
 
 
 def _bp_get_current_version(wineprefix: str) -> Optional[list]:
+    wineprefix = (wineprefix or '').rstrip('/') or wineprefix
     version_file = os.path.join(os.path.dirname(wineprefix), 'version')
     if os.path.isfile(version_file):
         try:

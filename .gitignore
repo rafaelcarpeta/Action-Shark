@@ -146,3 +146,11 @@ Thumbs.db
 # Prefix data
 wemod_prefixes/
 built_prefixes/
+
+# Application logs (created only on errors/crashes)
+logs/
+
+# Temporary scratch and dump files
+.tmp*
+*.resources
+out

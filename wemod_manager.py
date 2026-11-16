@@ -8,9 +8,12 @@ import re
 import shutil
 import subprocess
 import time
+import tempfile
+import traceback
 import zipfile
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Callable
+import error_logger
 
 # ── paths ────────────────────────────────────────────────────────────
 
@@ -376,6 +379,10 @@ def _find_any_proton_wine() -> Optional[str]:
 def _get_wine_binary(wineprefix: str) -> str:
     """Retorna o binario wine real (files/bin/wine) para usar com WINEPREFIX.
     Proton como wrapper nao funciona, precisamos do wine interno."""
+    # WINEPREFIX vindo de /proc/*/environ costuma ter barra final
+    # (.../pfx/); sem normalizar, dirname() aponta para .../pfx e o version
+    # file nunca e encontrado, caindo num Proton arbitrario.
+    wineprefix = (wineprefix or '').rstrip('/') or wineprefix
     # Steam / Proton: tenta achar pelo version file no parent
     version_file = os.path.join(os.path.dirname(wineprefix), 'version')
     if os.path.isfile(version_file):
@@ -471,11 +478,30 @@ def _is_portproton_prefix(wineprefix: str) -> bool:
 
 
 def _is_hydra_prefix(wineprefix: str) -> bool:
-    hydra_base = os.path.expanduser('~/.config/hydralauncher/wine-prefixes')
-    return wineprefix.startswith(hydra_base) and os.path.isdir(hydra_base)
+    bases = [
+        os.path.expanduser('~/.config/hydralauncher/wine-prefixes'),
+        os.path.expanduser('~/.var/app/io.github.hydralauncher.hydra/config/hydralauncher/wine-prefixes'),
+    ]
+    return any(wineprefix.startswith(b) and os.path.isdir(b) for b in bases)
 
 
 def _find_hydra_wine(wineprefix: str) -> Optional[str]:
+    # 1. Verifica config_info dentro do prefixo (gravado pelo umu/Proton do Hydra)
+    cfg_info = os.path.join(wineprefix, 'config_info')
+    if os.path.isfile(cfg_info):
+        try:
+            content = Path(cfg_info).read_text(errors='ignore')
+            for line in content.splitlines():
+                line = line.strip()
+                if '/files/' in line:
+                    base_files = line[:line.index('/files/') + len('/files/')]
+                    candidate = os.path.join(base_files, 'bin', 'wine')
+                    if os.path.isfile(candidate):
+                        return candidate
+        except OSError:
+            pass
+
+    # 2. Fallback pelo arquivo de versao
     version_file = os.path.join(wineprefix, 'version')
     if not os.path.isfile(version_file):
         return None
@@ -1030,6 +1056,7 @@ def _setup_steam_library_bridge(wineprefix: str, wine_bin: str) -> list[str]:
 
 def _get_proton_binary(wineprefix: str) -> Optional[str]:
     """Retorna o caminho do script 'proton' associado ao prefixo."""
+    wineprefix = (wineprefix or '').rstrip('/') or wineprefix
     version_file = os.path.join(os.path.dirname(wineprefix), 'version')
     if not os.path.isfile(version_file):
         return None
@@ -1155,14 +1182,26 @@ def _setup_proton_env(env: dict, wine_bin: str):
             break  # achou a estrutura, para
 
 
-def launch_wemod(wineprefix: str) -> Optional[int]:
+def launch_wemod(
+    wineprefix: str,
+    game_name: Optional[str] = None,
+    on_error_callback: Optional[Callable[[str, str], None]] = None,
+) -> Optional[int]:
     """Inicia WeMod no prefixo com wine direto (nunca Proton wrapper).
 
     Usar 'proton run' colocaria o WeMod (Electron) dentro do Steam Linux
     Runtime container, causando conflito com o container do jogo."""
     marker = os.path.join(wineprefix, WEMOD_MARKER)
     if not os.path.isfile(marker):
-        _log('WeMod nao instalado, instale primeiro')
+        msg = 'WeMod não instalado no prefixo, instale primeiro'
+        _log(msg)
+        error_logger.save_error_log(
+            game_name=game_name,
+            app_name="WeMod",
+            problem_type="Erro_de_Inicializacao",
+            details=msg,
+            context={'WINEPREFIX': wineprefix}
+        )
         return None
     if is_wemod_running(wineprefix):
         _log('WeMod ja esta rodando')
@@ -1172,7 +1211,15 @@ def launch_wemod(wineprefix: str) -> Optional[int]:
 
     app_dir = _get_wemod_app_dir()
     if not app_dir:
-        _log('Diretorio app-{version}/ do WeMod nao encontrado')
+        msg = 'Diretório app-{version}/ do WeMod não encontrado'
+        _log(msg)
+        error_logger.save_error_log(
+            game_name=game_name,
+            app_name="WeMod",
+            problem_type="Erro_de_Inicializacao",
+            details=msg,
+            context={'WINEPREFIX': wineprefix}
+        )
         return None
 
     # Garante symlink C:\WeMod\ -> wemod_bin/ para que assemblies .NET
@@ -1188,7 +1235,15 @@ def launch_wemod(wineprefix: str) -> Optional[int]:
 
     wemod_exe = os.path.join(c_wemod, 'WeMod.exe')
     if not os.path.isfile(wemod_exe):
-        _log(f'WeMod.exe nao encontrado em {wemod_exe}')
+        msg = f'WeMod.exe não encontrado em {wemod_exe}'
+        _log(msg)
+        error_logger.save_error_log(
+            game_name=game_name,
+            app_name="WeMod",
+            problem_type="Erro_de_Inicializacao",
+            details=msg,
+            context={'WINEPREFIX': wineprefix}
+        )
         return None
 
     # O fluxo de login abre uma webview Chromium. No Proton/Wine deste
@@ -1210,7 +1265,12 @@ def launch_wemod(wineprefix: str) -> Optional[int]:
 
     _fix_wemod_window_position(wineprefix)
 
-    logfile = f'/tmp/wemod_{os.path.basename(wineprefix)}.log'
+    temp_fd, temp_logfile = tempfile.mkstemp(
+        prefix=f'as_wemod_{error_logger.sanitize_name(os.path.basename(wineprefix))}_',
+        suffix='.tmp'
+    )
+    os.close(temp_fd)
+
     env = os.environ.copy()
     env['WINEPREFIX'] = wineprefix
     env['WINEDLLOVERRIDES'] = 'winedbg.exe=d;winemenubuilder.exe=d'
@@ -1227,14 +1287,48 @@ def launch_wemod(wineprefix: str) -> Optional[int]:
     cmd = [wine_bin, wemod_exe] + flags
     launch_desc = f'wine direto ({os.path.basename(wine_bin)})'
 
-    proc = subprocess.Popen(
-        cmd, env=env,
-        stdout=open(logfile, 'w'),
-        stderr=subprocess.STDOUT,
-        start_new_session=True,
+    try:
+        log_stream = open(temp_logfile, 'w')
+        proc = subprocess.Popen(
+            cmd, env=env,
+            stdout=log_stream,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+    except Exception as popen_exc:
+        error_logger.save_error_log(
+            game_name=game_name,
+            app_name="WeMod",
+            problem_type="Erro_de_Inicializacao",
+            details=f"Falha ao iniciar processo WeMod: {popen_exc}\n{traceback.format_exc()}",
+            context={
+                'WINEPREFIX': wineprefix,
+                'Wine Binary': wine_bin,
+                'WeMod Executable': wemod_exe,
+            }
+        )
+        try:
+            os.remove(temp_logfile)
+        except OSError:
+            pass
+        return None
+
+    context_info = {
+        'WINEPREFIX': wineprefix,
+        'Wine Binary': wine_bin,
+        'WeMod Executable': wemod_exe,
+        'PID': proc.pid,
+    }
+    error_logger.watch_process_execution(
+        proc=proc,
+        temp_logfile=temp_logfile,
+        game_name=game_name,
+        app_name="WeMod",
+        context=context_info,
+        on_error_callback=on_error_callback,
     )
-    _log(f'WeMod iniciado via {launch_desc} (PID {proc.pid}, log: {logfile})')
-    import time
+
+    _log(f'WeMod iniciado via {launch_desc} (PID {proc.pid})')
     time.sleep(3)
     we_pid = _get_wemod_pid(wineprefix)
     if we_pid:

@@ -11,6 +11,8 @@ import shutil
 import subprocess
 import sys
 import time
+import tempfile
+import traceback
 import zipfile
 from pathlib import Path
 from collections import deque
@@ -37,10 +39,12 @@ from PyQt6.QtWidgets import (
     QSplitter,
     QComboBox,
     QFrame,
+    QStackedWidget,
 )
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QIcon
 
+import error_logger
 import wemod_manager as wm
 import styles
 from ui_components import (
@@ -53,6 +57,7 @@ from ui_components import (
     get_cheatengine_icon,
     get_wemod_icon,
     get_folder_icon,
+    get_log_icon,
     get_gear_icon,
     get_refresh_icon,
     get_filter_icon,
@@ -140,6 +145,26 @@ def _find_steam_prefix(appid):
     return None
 
 
+def _resolve_prefix_root(pfx: str) -> str:
+    """Resolve o diretório raiz do prefixo individual.
+
+    Para jogos Steam onde o caminho termina em 'compatdata/<appid>/pfx',
+    a pasta do jogo é o diretório do AppID ('compatdata/<appid>').
+    Para todos os demais launchers (Hydra, Lutris, Heroic, Bottles,
+    PortProton, PlayOnLinux, Custom), a pasta do prefixo em si já é pfx.
+    Nunca apaga ou opera sobre o diretório pai que contém múltiplos prefixos.
+    """
+    if not pfx:
+        return ''
+    clean = os.path.abspath(pfx.rstrip('/'))
+    if os.path.basename(clean) == 'pfx':
+        parent = os.path.dirname(clean)
+        grandparent = os.path.dirname(parent)
+        if os.path.basename(grandparent) == 'compatdata':
+            return parent
+    return clean
+
+
 # ── Steam games (via protontricks) ─────────────────────────────────
 
 def get_steam_games():
@@ -172,9 +197,71 @@ def get_steam_games():
 
 # ── running Wine/Proton processes ──────────────────────────────────
 
+def _normalize_wineprefix(wineprefix):
+    """Remove trailing slashes so the same prefix compares equal everywhere.
+
+    /proc/*/environ reports WINEPREFIX with a trailing slash
+    (e.g. .../pfx/) while Steam/compatdata detection builds it without one.
+    os.path.dirname() on the un-normalized form returns .../pfx instead of
+    .../compatdata/<appid>, which breaks the Proton version lookup and makes
+    the app pick an arbitrary (wrong) wine build for a running game.
+    """
+    if not wineprefix:
+        return wineprefix
+    normalized = wineprefix.rstrip('/')
+    return normalized or wineprefix
+
+
+def _wine_bin_from_wineserver_exe(wineserver_exe):
+    """Derive files/bin/wine from a live wineserver /proc/<pid>/exe path."""
+    try:
+        real = os.path.realpath(wineserver_exe)
+    except OSError:
+        return None
+    bindir = os.path.dirname(real)
+    for name in ('wine', 'wine64'):
+        candidate = os.path.join(bindir, name)
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
 def get_running_wine_entries():
     entries = []
     seen_prefixes = set()
+
+    # Map normalized prefix -> wine binary of its LIVE wineserver. This is the
+    # exact build hosting the running game; reusing it guarantees the trainer
+    # / CE attaches to the same server instead of fighting it with a
+    # different Proton build (which fails exactly when the game is running).
+    live_wine_bins = {}
+    for entry in os.listdir('/proc'):
+        if not entry.isdigit():
+            continue
+        try:
+            comm = _read_file_safe(f'/proc/{entry}/comm').strip()
+        except OSError:
+            continue
+        if 'wineserver' not in comm.lower():
+            continue
+        environ_raw = _read_file_safe(f'/proc/{entry}/environ', 'rb')
+        if not environ_raw:
+            continue
+        environ = environ_raw.decode('utf-8', errors='replace').split('\0')
+        prefix = None
+        for var in environ:
+            if var.startswith('WINEPREFIX='):
+                prefix = _normalize_wineprefix(var.split('=', 1)[1])
+                break
+        if not prefix:
+            continue
+        try:
+            exe = os.readlink(f'/proc/{entry}/exe')
+        except OSError:
+            continue
+        wine_bin = _wine_bin_from_wineserver_exe(exe)
+        if wine_bin and prefix not in live_wine_bins:
+            live_wine_bins[prefix] = wine_bin
 
     for entry in os.listdir('/proc'):
         if not entry.isdigit():
@@ -191,7 +278,7 @@ def get_running_wine_entries():
                 k, v = var.split('=', 1)
                 env[k] = v
 
-        wineprefix = env.get('WINEPREFIX')
+        wineprefix = _normalize_wineprefix(env.get('WINEPREFIX'))
         if not wineprefix:
             continue
 
@@ -234,6 +321,10 @@ def get_running_wine_entries():
         m = re.search(r'compatdata/(\d+)/', cmdline)
         if m:
             appid = m.group(1)
+        elif wineprefix:
+            m_hydra = re.search(r'hydralauncher/wine-prefixes/(\d+)', wineprefix)
+            if m_hydra:
+                appid = m_hydra.group(1)
 
         launcher_keywords = [
             'lutris', 'bottles', 'heroic', 'epicgames', 'epic',
@@ -252,6 +343,7 @@ def get_running_wine_entries():
             'exe_path': exe_path,
             'is_proton': is_proton,
             'is_launcher': is_launcher,
+            'wine_bin': live_wine_bins.get(wineprefix),
         }
         entries.append(entry)
         if wineprefix not in seen_prefixes:
@@ -397,21 +489,203 @@ def _detect_playonlinux():
     return out
 
 
+def _resolve_steam_title(appid: str) -> str:
+    """Resolve steam appid to game title, caching results locally."""
+    if not appid or not str(appid).isdigit():
+        return ''
+    appid = str(appid)
+    cache_path = os.path.expanduser('~/.config/trainer_manager/steam_titles_cache.json')
+    cache = {}
+    if os.path.isfile(cache_path):
+        try:
+            cache = json.loads(Path(cache_path).read_text())
+        except (OSError, json.JSONDecodeError):
+            cache = {}
+    if appid in cache and cache[appid]:
+        return cache[appid]
+
+    try:
+        import urllib.request
+        url = f'https://store.steampowered.com/api/appdetails?appids={appid}&filters=basic'
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=1.5) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+            name = data.get(appid, {}).get('data', {}).get('name')
+            if name:
+                cache[appid] = name
+                try:
+                    Path(cache_path).parent.mkdir(parents=True, exist_ok=True)
+                    Path(cache_path).write_text(json.dumps(cache, indent=2))
+                except OSError:
+                    pass
+                return name
+    except Exception:
+        pass
+    return ''
+
+
+def _get_hydra_games_metadata():
+    """Extract game metadata (title, executablePath) from Hydra database and logs."""
+    import glob
+    games = {}
+    hydra_dirs = [
+        os.path.expanduser('~/.config/hydralauncher'),
+        os.path.expanduser('~/.var/app/io.github.hydralauncher.hydra/config/hydralauncher'),
+    ]
+
+    for h_dir in hydra_dirs:
+        db_dir = os.path.join(h_dir, 'hydra-db')
+        if os.path.isdir(db_dir):
+            for fpath in glob.glob(os.path.join(db_dir, '*')):
+                if not fpath.endswith(('.log', '.ldb')):
+                    continue
+                try:
+                    data = Path(fpath).read_bytes()
+                except OSError:
+                    continue
+
+                # 1. Parse structured JSON payloads following !games! and !gameShopAssets!
+                idx = 0
+                while True:
+                    p_games = data.find(b'!games!', idx)
+                    p_shop = data.find(b'!gameShopAssets!', idx)
+                    candidates = [p for p in (p_games, p_shop) if p != -1]
+                    if not candidates:
+                        break
+                    p_next = min(candidates)
+                    idx = p_next + 7
+
+                    brace_start = data.find(b'{', p_next)
+                    if brace_start != -1 and brace_start - p_next < 120:
+                        depth = 0
+                        in_string = False
+                        escape = False
+                        for i in range(brace_start, min(len(data), brace_start + 10000)):
+                            b = data[i:i+1]
+                            if escape:
+                                escape = False
+                                continue
+                            if b == b'\\':
+                                escape = True
+                                continue
+                            if b == b'"':
+                                in_string = not in_string
+                                continue
+                            if not in_string:
+                                if b == b'{':
+                                    depth += 1
+                                elif b == b'}':
+                                    depth -= 1
+                                    if depth == 0:
+                                        raw = data[brace_start:i+1].decode('utf-8', errors='ignore')
+                                        try:
+                                            obj = json.loads(raw)
+                                            oid = str(obj.get('objectId') or obj.get('id') or '')
+                                            title = obj.get('title')
+                                            exe = obj.get('executablePath') or ''
+                                            if oid and title:
+                                                if oid not in games:
+                                                    games[oid] = {'title': title, 'exe': exe}
+                                                else:
+                                                    if title:
+                                                        games[oid]['title'] = title
+                                                    if exe and (not games[oid]['exe'] or os.path.isfile(exe)):
+                                                        games[oid]['exe'] = exe
+                                        except Exception:
+                                            pass
+                                        break
+
+                # 2. Regex fallback for string pairs across binary LevelDB blocks
+                p1 = re.compile(rb'"objectId":"(\d+)"[^}{]{1,800}"title":"((?:[^"\\]|\\.)*)"')
+                p2 = re.compile(rb'"title":"((?:[^"\\]|\\.)*)"[^}{]{1,800}"objectId":"(\d+)"')
+                for m in p1.finditer(data):
+                    oid = m.group(1).decode('utf-8', errors='ignore')
+                    t = m.group(2).decode('utf-8', errors='ignore')
+                    try:
+                        t = json.loads(f'"{t}"')
+                    except Exception:
+                        pass
+                    if oid not in games or not games[oid].get('title'):
+                        games[oid] = {'title': t, 'exe': ''}
+                for m in p2.finditer(data):
+                    t = m.group(1).decode('utf-8', errors='ignore')
+                    oid = m.group(2).decode('utf-8', errors='ignore')
+                    try:
+                        t = json.loads(f'"{t}"')
+                    except Exception:
+                        pass
+                    if oid not in games or not games[oid].get('title'):
+                        games[oid] = {'title': t, 'exe': ''}
+
+        # 3. Check logs directory for achievements notifications and umu executable commands
+        logs_dir = os.path.join(h_dir, 'logs')
+        if os.path.isdir(logs_dir):
+            ach_path = os.path.join(logs_dir, 'achievements.txt')
+            if os.path.isfile(ach_path):
+                try:
+                    with open(ach_path, 'r', encoding='utf-8', errors='ignore') as fp:
+                        for line in fp:
+                            if 'Publishing achievement notification' in line:
+                                parts = line.strip().split('Publishing achievement notification', 1)
+                                if len(parts) == 2:
+                                    sub = parts[1].strip().split(' ', 1)
+                                    if len(sub) == 2 and sub[0].isdigit():
+                                        aid, tname = sub[0], sub[1].strip()
+                                        if aid not in games:
+                                            games[aid] = {'title': tname, 'exe': ''}
+                except OSError:
+                    pass
+
+            for oid, info in games.items():
+                if not info.get('exe') or not os.path.isfile(info['exe']):
+                    umu_log = os.path.join(logs_dir, f'umu-{oid}.log')
+                    if os.path.isfile(umu_log):
+                        try:
+                            with open(umu_log, 'r', encoding='utf-8', errors='ignore') as fp:
+                                for line in fp:
+                                    if 'Command:' in line and '.exe' in line:
+                                        m = re.findall(r"['\"]([^'\"]+\.exe)['\"]", line)
+                                        if m and os.path.isfile(m[-1]):
+                                            info['exe'] = m[-1]
+                        except OSError:
+                            pass
+
+    return games
+
+
 def _detect_hydra():
     out = []
-    base = os.path.expanduser('~/.config/hydralauncher/wine-prefixes')
-    if not os.path.isdir(base):
-        return out
-    for entry in sorted(os.listdir(base)):
-        pfx = os.path.join(base, entry)
-        if not os.path.isdir(os.path.join(pfx, 'drive_c')):
+    meta = _get_hydra_games_metadata()
+    bases = [
+        os.path.expanduser('~/.config/hydralauncher/wine-prefixes'),
+        os.path.expanduser('~/.var/app/io.github.hydralauncher.hydra/config/hydralauncher/wine-prefixes'),
+    ]
+    seen_prefixes = set()
+    for base in bases:
+        if not os.path.isdir(base):
             continue
-        out.append({
-            'name': f"Hydra: {entry}",
-            'wineprefix': pfx,
-            'source': 'Hydra',
-            'exe': '',
-        })
+        for entry in sorted(os.listdir(base)):
+            pfx = os.path.join(base, entry)
+            if not os.path.isdir(os.path.join(pfx, 'drive_c')):
+                continue
+            if pfx in seen_prefixes:
+                continue
+            seen_prefixes.add(pfx)
+
+            game_info = meta.get(entry, {})
+            title = game_info.get('title')
+            if not title and entry.isdigit():
+                title = _resolve_steam_title(entry)
+            display_title = title if title else entry
+            exe = game_info.get('exe', '')
+
+            out.append({
+                'name': f"Hydra: {display_title}",
+                'wineprefix': pfx,
+                'source': 'Hydra',
+                'exe': exe,
+                'appid': entry if entry.isdigit() else None,
+            })
     return out
 
 
@@ -519,7 +793,7 @@ def get_all_entries():
     for l in get_launcher_prefixes():
         _add({
             'name': l['name'],
-            'appid': None,
+            'appid': l.get('appid', None),
             'wineprefix': l['wineprefix'],
             'source': l['source'],
             'exe': l.get('exe', ''),
@@ -657,6 +931,79 @@ def get_available_wine_runners(wineprefix=None):
     return runners
 
 
+_WINE_VERSION_CACHE = {}
+
+
+def get_wine_runner_label(wine_bin, wineprefix=None):
+    """Return a concise, human-readable display name for the Wine / Proton version."""
+    if not wine_bin and wineprefix:
+        wine_bin = find_wine_binary(wineprefix)
+    if not wine_bin:
+        return "Não detectado"
+
+    real_bin = os.path.realpath(wine_bin)
+
+    # 1. Match against scanned runners (covers Steam Protons, GE-Proton, etc.)
+    runners = get_available_wine_runners(wineprefix)
+    for label, path in runners:
+        if os.path.realpath(path) == real_bin and label.lower() not in ('wine', 'wine64'):
+            return label
+
+    # 2. Check compatibilitytool.vdf or proton script in parent directories
+    p = Path(real_bin)
+    cur = p.parent
+    for _ in range(4):
+        vdf = cur / 'compatibilitytool.vdf'
+        if vdf.is_file():
+            content = _read_file_safe(str(vdf))
+            m = re.search(r'"display_name"\s+"([^"\n]+)"', content)
+            if m:
+                return m.group(1).strip()
+            return cur.name
+        if (cur / 'proton').is_file():
+            return cur.name
+        cur = cur.parent
+
+    # 3. Check version file in compatdata parent
+    if wineprefix:
+        pfx_clean = wineprefix.rstrip('/')
+        ver_file = os.path.join(os.path.dirname(pfx_clean), 'version')
+        if os.path.isfile(ver_file):
+            v_content = _read_file_safe(ver_file).strip()
+            if v_content:
+                return f"Proton ({v_content})"
+
+        # PortProton .wine_ver
+        pp_ver = os.path.join(pfx_clean, '.wine_ver')
+        if os.path.isfile(pp_ver):
+            pp_content = _read_file_safe(pp_ver).strip()
+            if pp_content:
+                return f"PortProton ({pp_content})"
+
+    # 4. Check system wine
+    if '/usr/bin' in real_bin or '/usr/local/bin' in real_bin:
+        return "System Wine"
+
+    # 5. Try wine --version for custom/bundled builds
+    if real_bin in _WINE_VERSION_CACHE:
+        return _WINE_VERSION_CACHE[real_bin]
+
+    try:
+        r = subprocess.run([real_bin, '--version'], capture_output=True, text=True, timeout=1.5)
+        if r.returncode == 0 and r.stdout.strip():
+            ver = r.stdout.strip()
+            _WINE_VERSION_CACHE[real_bin] = ver
+            return ver
+    except Exception:
+        pass
+
+    # 6. Fallback to enclosing directory or binary name
+    parent_name = os.path.basename(os.path.dirname(os.path.dirname(real_bin)))
+    fallback = parent_name if parent_name and parent_name not in ('', '.', 'bin', 'files', 'dist') else os.path.basename(real_bin)
+    _WINE_VERSION_CACHE[real_bin] = fallback
+    return fallback
+
+
 def _setup_proton_env_for_exe(env, wine_bin):
     wine_real = os.path.realpath(wine_bin)
     wine_dir = os.path.dirname(wine_real)
@@ -679,8 +1026,108 @@ def _setup_proton_env_for_exe(env, wine_bin):
             break
 
 
-def run_exe_in_prefix(wine_bin, exe_path, wineprefix, pin=None, extra_env=None):
-    logfile = f'/tmp/trainer_{pin or os.getpid()}.log'
+def _trainer_temp_dir(wineprefix):
+    """Resolve the Windows TEMP directory recorded by a Wine prefix."""
+    user_reg = _read_file_safe(os.path.join(wineprefix, 'user.reg'))
+    section = re.search(
+        r'^\[Environment\][^\n]*\n(.*?)(?=^\[|\Z)',
+        user_reg,
+        re.MULTILINE | re.DOTALL,
+    )
+    if section:
+        match = re.search(r'^"TEMP"="(.*)"$', section.group(1), re.MULTILINE)
+        if match:
+            windows_path = match.group(1).replace('\\\\', '\\')
+            drive_match = re.match(r'^([A-Za-z]):[\\/](.*)$', windows_path)
+            if drive_match and drive_match.group(1).lower() == 'c':
+                parts = [
+                    part for part in re.split(r'[\\/]+', drive_match.group(2))
+                    if part not in ('', '.')
+                ]
+                if '..' not in parts:
+                    return os.path.join(wineprefix, 'drive_c', *parts)
+
+    # Proton normally uses steamuser.  Older/custom prefixes can use any
+    # profile name, so fall back to the first real user profile.
+    users_dir = os.path.join(wineprefix, 'drive_c', 'users')
+    preferred = os.path.join(users_dir, 'steamuser')
+    if os.path.isdir(preferred):
+        return os.path.join(preferred, 'Temp')
+    if os.path.isdir(users_dir):
+        ignored = {'public', 'default', 'default user', 'all users'}
+        for name in sorted(os.listdir(users_dir), key=str.casefold):
+            profile = os.path.join(users_dir, name)
+            if os.path.isdir(profile) and name.casefold() not in ignored:
+                return os.path.join(profile, 'AppData', 'Local', 'Temp')
+    return os.path.join(wineprefix, 'drive_c', 'windows', 'temp')
+
+
+def _clean_stale_fling_locks(wineprefix):
+    """Remove stale FLiNG locks (info.ini) that falsely signal that another
+    instance is already running for the active game PID."""
+    users_dir = os.path.join(wineprefix, 'drive_c', 'users')
+    if not os.path.isdir(users_dir):
+        return
+    for user in os.listdir(users_dir):
+        fling_logs = os.path.join(users_dir, user, 'AppData', 'Local', 'FLiNGTrainer', 'trainer-logs')
+        if os.path.isdir(fling_logs):
+            for root, _, files in os.walk(fling_logs):
+                for f in files:
+                    if f.lower() == 'info.ini':
+                        try:
+                            os.remove(os.path.join(root, f))
+                        except OSError:
+                            pass
+
+
+def _prepare_trainer_prefix(wine_bin, wineprefix, env):
+    """Prepare a prefix for current FLiNG/WPF self-extracting trainers."""
+    temp_dir = _trainer_temp_dir(wineprefix)
+    os.makedirs(temp_dir, exist_ok=True)
+    _clean_stale_fling_locks(wineprefix)
+
+    # Recent FLiNG trainers unpack a managed WPF payload into %TEMP%.  Native
+    # .NET WPF can crash in wpfgfx_v0400 while probing the Proton/DXVK graphics
+    # stack.  This documented Avalon switch keeps only WPF on software
+    # rendering; it does not disable DXVK for the game itself.
+    try:
+        result = subprocess.run(
+            [
+                wine_bin, 'reg', 'add',
+                r'HKCU\Software\Microsoft\Avalon.Graphics',
+                '/v', 'DisableHWAcceleration',
+                '/t', 'REG_DWORD', '/d', '1', '/f',
+            ],
+            env=env,
+            capture_output=True,
+            text=True,
+            errors='replace',
+            timeout=15,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError('timeout ao configurar renderizacao WPF no prefixo') from exc
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        raise RuntimeError(
+            'nao foi possivel configurar renderizacao WPF no prefixo'
+            + (f': {detail}' if detail else '')
+        )
+    return temp_dir
+
+
+def run_exe_in_prefix(wine_bin, exe_path, wineprefix, pin=None, extra_env=None,
+                      prepare_prefix=True, game_name=None, app_name=None,
+                      on_error_callback=None):
+    wineprefix = _normalize_wineprefix(wineprefix)
+    if not app_name:
+        app_name = os.path.basename(exe_path)
+
+    temp_fd, temp_logfile = tempfile.mkstemp(
+        prefix=f'as_run_{error_logger.sanitize_name(app_name)}_{pin or os.getpid()}_',
+        suffix='.tmp'
+    )
+    os.close(temp_fd)
+
     env = os.environ.copy()
     env['WINEPREFIX'] = wineprefix
     if extra_env:
@@ -690,15 +1137,77 @@ def run_exe_in_prefix(wine_bin, exe_path, wineprefix, pin=None, extra_env=None):
     # word "proton". The helper is harmless for system Wine and correctly
     # detects whether the expected lib/lib64 layout exists.
     _setup_proton_env_for_exe(env, wine_bin)
+    env['PATH'] = os.path.dirname(wine_bin) + ':' + env.get('PATH', '')
+    temp_dir = None
+    if prepare_prefix:
+        try:
+            temp_dir = _prepare_trainer_prefix(wine_bin, wineprefix, env)
+        except Exception as prep_exc:
+            err_log = error_logger.save_error_log(
+                game_name=game_name,
+                app_name=app_name,
+                problem_type="Erro_de_Inicializacao",
+                details=f"Falha na preparação do prefixo: {prep_exc}\n{traceback.format_exc()}",
+                context={
+                    'WINEPREFIX': wineprefix,
+                    'Wine Binary': wine_bin,
+                    'Executable': exe_path,
+                }
+            )
+            try:
+                os.remove(temp_logfile)
+            except OSError:
+                pass
+            raise RuntimeError(f"Falha na preparação do prefixo (log: {os.path.basename(err_log)}): {prep_exc}") from prep_exc
 
-    subprocess.Popen(
-        [wine_bin, exe_path],
-        env=env,
-        stdout=open(logfile, 'w'),
-        stderr=subprocess.STDOUT,
-        start_new_session=True,
+    try:
+        log_stream = open(temp_logfile, 'w')
+        log_stream.write(f'[Action Shark] WINEPREFIX={wineprefix}\n')
+        if temp_dir:
+            log_stream.write(f'[Action Shark] TEMP={temp_dir}\n')
+            log_stream.write('[Action Shark] WPF software rendering enabled\n')
+        log_stream.flush()
+        proc = subprocess.Popen(
+            [wine_bin, exe_path],
+            cwd=os.path.dirname(os.path.abspath(exe_path)),
+            env=env,
+            stdout=log_stream,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+    except Exception as popen_exc:
+        err_log = error_logger.save_error_log(
+            game_name=game_name,
+            app_name=app_name,
+            problem_type="Erro_de_Inicializacao",
+            details=f"Falha ao iniciar processo: {popen_exc}\n{traceback.format_exc()}",
+            context={
+                'WINEPREFIX': wineprefix,
+                'Wine Binary': wine_bin,
+                'Executable': exe_path,
+            }
+        )
+        try:
+            os.remove(temp_logfile)
+        except OSError:
+            pass
+        raise RuntimeError(f"Falha ao iniciar processo (log: {os.path.basename(err_log)}): {popen_exc}") from popen_exc
+
+    context_info = {
+        'WINEPREFIX': wineprefix,
+        'Wine Binary': wine_bin,
+        'Executable': exe_path,
+        'PID': proc.pid,
+    }
+    error_logger.watch_process_execution(
+        proc=proc,
+        temp_logfile=temp_logfile,
+        game_name=game_name,
+        app_name=app_name,
+        context=context_info,
+        on_error_callback=on_error_callback,
     )
-    return logfile
+    return proc
 
 
 def _find_wine_bin_for_pid(pid):
@@ -734,6 +1243,7 @@ def _find_wine_bin_for_pid(pid):
 # ── UI: ProtonRunner (Exact Mockup 2 Desktop Pro) ────────────────────
 
 class ProtonRunner(QWidget):
+    process_error_detected = pyqtSignal(str, str)
 
     def __init__(self):
         super().__init__()
@@ -746,8 +1256,12 @@ class ProtonRunner(QWidget):
         self.resize(1270, 676)
         self._drag_origin = None
 
+        if QApplication.instance():
+            QApplication.instance().setStyleSheet(styles.GLOBAL_STYLESHEET)
         self.setStyleSheet(styles.GLOBAL_STYLESHEET)
         self.config = load_config()
+
+        self.process_error_detected.connect(self._handle_process_error)
 
         # Thread queues for built prefix / backups
         self._built_msg_queue = deque()
@@ -761,7 +1275,7 @@ class ProtonRunner(QWidget):
         self._build_ui()
         self.ensurePolished()
         self.search_bar.setFixedSize(516, 35)
-        for button in (self.ce_btn, self.wemod_btn, self.open_folder_btn):
+        for button in (self.ce_btn, self.wemod_btn, self.open_folder_btn, self.open_logs_btn):
             button.setFixedHeight(53)
         self._load_tree()
 
@@ -772,6 +1286,33 @@ class ProtonRunner(QWidget):
         self._auto_refresh_timer = QTimer(self)
         self._auto_refresh_timer.timeout.connect(self._auto_refresh)
         self._auto_refresh_timer.start(5000)
+
+    @property
+    def tree(self):
+        if hasattr(self, 'view_stack') and self.view_stack.currentIndex() == 1:
+            return getattr(self, 'pref_tree', None)
+        return getattr(self, 'proc_tree', None)
+
+    def _switch_tab(self, index):
+        self.view_stack.setCurrentIndex(index)
+        self.tab_proc_btn.setProperty("selected", "true" if index == 0 else "false")
+        self.tab_pref_btn.setProperty("selected", "true" if index == 1 else "false")
+        self.tab_proc_btn.style().unpolish(self.tab_proc_btn)
+        self.tab_proc_btn.style().polish(self.tab_proc_btn)
+        self.tab_pref_btn.style().unpolish(self.tab_pref_btn)
+        self.tab_pref_btn.style().polish(self.tab_pref_btn)
+        self._apply_filters()
+        self._on_item_selected()
+
+    def _on_pref_item_double_clicked(self, item, column):
+        data = item.data(0, Qt.ItemDataRole.UserRole)
+        if not data:
+            return
+        pfx = data.get('wineprefix', '')
+        if column == 3 and pfx:
+            dlg = WeModDialog(pfx, data.get('name', 'Jogo'), self)
+            dlg.exec()
+            self._load_tree()
 
     def _build_ui(self):
         main_layout = QVBoxLayout(self)
@@ -818,7 +1359,7 @@ class ProtonRunner(QWidget):
 
         self.search_bar = QLineEdit()
         self.search_bar.setObjectName("searchBar")
-        self.search_bar.setPlaceholderText("Search...")
+        self.search_bar.setPlaceholderText("Filtrar por nome, PID ou executável...")
         self.search_bar.setFixedWidth(516)
         self.search_bar.setFixedHeight(35)
         self.search_bar.addAction(get_search_icon(16), QLineEdit.ActionPosition.LeadingPosition)
@@ -843,44 +1384,113 @@ class ProtonRunner(QWidget):
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
         self.splitter.setChildrenCollapsible(False)
 
-        # ── Left Column (~65% width) ────────────────────────────────
-        # Filter Chips Bar
+        # ── Segmented Navigation (Processos Ativos vs Prefixos Instalados) ──
+        tab_container = QFrame()
+        tab_container.setObjectName("navTabContainer")
+        tab_container.setStyleSheet(
+            "QFrame#navTabContainer { background-color: #1a1b24; border: 1px solid #2d2f3d; border-radius: 8px; padding: 2px; }"
+        )
+        tab_bar_layout = QHBoxLayout(tab_container)
+        tab_bar_layout.setContentsMargins(2, 2, 2, 2)
+        tab_bar_layout.setSpacing(4)
+
+        self.tab_proc_btn = QPushButton("⚡ Processos Ativos (0)")
+        self.tab_proc_btn.setObjectName("navTabBtn")
+        self.tab_proc_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.tab_proc_btn.setProperty("selected", "true")
+        self.tab_proc_btn.clicked.connect(lambda: self._switch_tab(0))
+
+        self.tab_pref_btn = QPushButton("📁 Prefixos Instalados (0)")
+        self.tab_pref_btn.setObjectName("navTabBtn")
+        self.tab_pref_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.tab_pref_btn.setProperty("selected", "false")
+        self.tab_pref_btn.clicked.connect(lambda: self._switch_tab(1))
+
+        tab_bar_layout.addWidget(self.tab_proc_btn)
+        tab_bar_layout.addWidget(self.tab_pref_btn)
+
+        nav_row = QHBoxLayout()
+        nav_row.setContentsMargins(0, 0, 0, 8)
+        nav_row.addWidget(tab_container)
+        nav_row.addStretch()
+        left_layout.addLayout(nav_row)
+
+        # ── Stacked View ─────────────────────────────────────────────
+        self.view_stack = QStackedWidget()
+
+        # Page 0: Processos Ativos
+        proc_page = QWidget()
+        proc_layout = QVBoxLayout(proc_page)
+        proc_layout.setContentsMargins(0, 0, 0, 0)
+        proc_layout.setSpacing(0)
+
+        self.proc_tree = QTreeWidget()
+        self.proc_tree.setHeaderLabels(['PID', 'Jogo / Executável', 'Ambiente / Runner', 'Status'])
+        self.proc_tree.setRootIsDecorated(False)
+        self.proc_tree.setAlternatingRowColors(False)
+        self.proc_tree.setSelectionBehavior(QTreeWidget.SelectionBehavior.SelectRows)
+        self.proc_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.proc_tree.customContextMenuRequested.connect(self._tree_context_menu)
+        self.proc_tree.itemSelectionChanged.connect(self._on_item_selected)
+
+        self.proc_status_delegate = StatusBadgeDelegate(self.proc_tree)
+        self.proc_tree.setItemDelegate(self.proc_status_delegate)
+
+        ph = self.proc_tree.header()
+        ph.setFixedHeight(35)
+        ph.setStretchLastSection(False)
+        ph.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        ph.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        ph.setMinimumSectionSize(60)
+        ph.setSectionsMovable(False)
+        self.proc_tree.setHorizontalScrollMode(QTreeWidget.ScrollMode.ScrollPerPixel)
+        self.proc_tree.setColumnWidth(0, 75)
+        self.proc_tree.setColumnWidth(2, 220)
+        self.proc_tree.setColumnWidth(3, 110)
+
+        proc_layout.addWidget(self.proc_tree)
+        self.view_stack.addWidget(proc_page)
+
+        # Page 1: Prefixos Instalados
+        pref_page = QWidget()
+        pref_layout = QVBoxLayout(pref_page)
+        pref_layout.setContentsMargins(0, 0, 0, 0)
+        pref_layout.setSpacing(8)
+
+        # Filter Chips Bar (Launcher sub-filters)
         self.chip_bar = FilterChipBar()
         self.chip_bar.filter_changed.connect(lambda code: self._apply_filters())
-        left_layout.addWidget(self.chip_bar)
-        left_layout.addSpacing(8)
+        pref_layout.addWidget(self.chip_bar)
 
-        # Main Table
-        self.tree = QTreeWidget()
-        self.tree.setHeaderLabels(['Game Name', 'Source', 'Prefix Path', 'Status'])
-        self.tree.setRootIsDecorated(False)
-        self.tree.setAlternatingRowColors(False)
-        self.tree.setSelectionBehavior(QTreeWidget.SelectionBehavior.SelectRows)
-        self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.tree.customContextMenuRequested.connect(self._tree_context_menu)
-        self.tree.itemSelectionChanged.connect(self._on_item_selected)
+        self.pref_tree = QTreeWidget()
+        self.pref_tree.setHeaderLabels(['Jogo / Prefixo', 'Origem', 'Arquitetura', 'WeMod'])
+        self.pref_tree.setRootIsDecorated(False)
+        self.pref_tree.setAlternatingRowColors(False)
+        self.pref_tree.setSelectionBehavior(QTreeWidget.SelectionBehavior.SelectRows)
+        self.pref_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.pref_tree.customContextMenuRequested.connect(self._tree_context_menu)
+        self.pref_tree.itemSelectionChanged.connect(self._on_item_selected)
+        self.pref_tree.itemDoubleClicked.connect(self._on_pref_item_double_clicked)
 
-        self.status_delegate = StatusBadgeDelegate(self.tree)
-        self.tree.setItemDelegate(self.status_delegate)
+        self.pref_status_delegate = StatusBadgeDelegate(self.pref_tree)
+        self.pref_tree.setItemDelegate(self.pref_status_delegate)
 
-        h = self.tree.header()
-        h.setFixedHeight(35)
-        h.setStretchLastSection(False)
-        # Each right-hand divider resizes only its own column. Stretch mode
-        # on Game Name previously moved the other dividers during a drag.
-        h.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
-        h.setMinimumSectionSize(80)
-        h.setSectionsMovable(False)
-        self.tree.setHorizontalScrollMode(QTreeWidget.ScrollMode.ScrollPerPixel)
-        self.tree.setColumnWidth(0, 290)
-        self.tree.setColumnWidth(1, 132)
-        self.tree.setColumnWidth(2, 310)
-        self.tree.setColumnWidth(3, 116)
-        for column, name in enumerate(('Game Name', 'Source', 'Prefix Path', 'Status')):
-            self.tree.headerItem().setToolTip(
-                column, f'{name}: arraste a borda direita para ajustar a largura.')
+        pfh = self.pref_tree.header()
+        pfh.setFixedHeight(35)
+        pfh.setStretchLastSection(False)
+        pfh.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        pfh.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        pfh.setMinimumSectionSize(60)
+        pfh.setSectionsMovable(False)
+        self.pref_tree.setHorizontalScrollMode(QTreeWidget.ScrollMode.ScrollPerPixel)
+        self.pref_tree.setColumnWidth(1, 140)
+        self.pref_tree.setColumnWidth(2, 110)
+        self.pref_tree.setColumnWidth(3, 140)
 
-        left_layout.addWidget(self.tree)
+        pref_layout.addWidget(self.pref_tree)
+        self.view_stack.addWidget(pref_page)
+
+        left_layout.addWidget(self.view_stack)
         self.splitter.addWidget(left_container)
 
         # ── Right Column: Inspector + integrated window controls ─────
@@ -944,7 +1554,54 @@ class ProtonRunner(QWidget):
         # Game Banner Widget
         self.banner_widget = GameBannerWidget()
         inspector_layout.addWidget(self.banner_widget)
-        inspector_layout.addSpacing(12)
+        inspector_layout.addSpacing(10)
+
+        # WINEPREFIX Quick Info & Actions in Inspector
+        pfx_info_frame = QFrame()
+        pfx_info_frame.setObjectName("pfxInfoFrame")
+        pfx_info_frame.setStyleSheet(
+            "QFrame#pfxInfoFrame { background-color: #202128; border: 1px solid #2d2e3b; border-radius: 8px; }"
+        )
+        pfx_layout = QVBoxLayout(pfx_info_frame)
+        pfx_layout.setContentsMargins(10, 8, 10, 8)
+        pfx_layout.setSpacing(6)
+
+        pfx_header_row = QHBoxLayout()
+        pfx_title_lbl = QLabel("WINEPREFIX")
+        pfx_title_lbl.setStyleSheet("font-size: 11px; font-weight: 600; color: #9ca3af; text-transform: uppercase; background: transparent; border: none;")
+        pfx_header_row.addWidget(pfx_title_lbl)
+        pfx_header_row.addStretch()
+
+        self.copy_pfx_btn = QPushButton("Copiar")
+        self.copy_pfx_btn.setFixedHeight(22)
+        self.copy_pfx_btn.setStyleSheet("font-size: 11px; padding: 2px 8px; background: #272834; border: 1px solid #3f4258; border-radius: 4px; color: #d1d5db;")
+        self.copy_pfx_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.copy_pfx_btn.clicked.connect(self._copy_prefix_path)
+        pfx_header_row.addWidget(self.copy_pfx_btn)
+
+        self.open_pfx_quick_btn = QPushButton("Abrir Pasta")
+        self.open_pfx_quick_btn.setFixedHeight(22)
+        self.open_pfx_quick_btn.setStyleSheet("font-size: 11px; padding: 2px 8px; background: transparent; border: 1px solid #3f4258; border-radius: 4px; color: #818cf8;")
+        self.open_pfx_quick_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.open_pfx_quick_btn.clicked.connect(self._open_prefix_folder)
+        pfx_header_row.addWidget(self.open_pfx_quick_btn)
+        pfx_layout.addLayout(pfx_header_row)
+
+        self.pfx_path_label = QLabel("Nenhum prefixo selecionado")
+        self.pfx_path_label.setStyleSheet("font-size: 11px; font-family: monospace; color: #d4d4d8; background: transparent; border: none;")
+        self.pfx_path_label.setWordWrap(True)
+        pfx_layout.addWidget(self.pfx_path_label)
+
+        self.add_to_lib_btn = QPushButton("➕ Adicionar à Lista de Prefixos")
+        self.add_to_lib_btn.setFixedHeight(26)
+        self.add_to_lib_btn.setStyleSheet("font-size: 11px; font-weight: 600; background: rgba(99, 102, 241, 0.15); border: 1px solid rgba(99, 102, 241, 0.35); border-radius: 6px; color: #a5b4fc;")
+        self.add_to_lib_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.add_to_lib_btn.clicked.connect(self._save_selected_to_custom_prefixes)
+        self.add_to_lib_btn.setVisible(False)
+        pfx_layout.addWidget(self.add_to_lib_btn)
+
+        inspector_layout.addWidget(pfx_info_frame)
+        inspector_layout.addSpacing(10)
 
         # Wine Version Section
         wine_lbl = QLabel("Wine Version  ⓘ")
@@ -954,9 +1611,23 @@ class ProtonRunner(QWidget):
         inspector_layout.addWidget(wine_lbl)
         inspector_layout.addSpacing(6)
 
-        self.wine_version_combo = QComboBox()
-        self.wine_version_combo.setFixedHeight(35)
-        inspector_layout.addWidget(self.wine_version_combo)
+        self.wine_version_frame = QFrame()
+        self.wine_version_frame.setObjectName("wineVersionFrame")
+        self.wine_version_frame.setFixedHeight(35)
+        self.wine_version_frame.setStyleSheet(
+            "QFrame#wineVersionFrame { background-color: #202127; border: 1px solid #3a3b46; border-radius: 8px; }"
+        )
+        wv_layout = QHBoxLayout(self.wine_version_frame)
+        wv_layout.setContentsMargins(11, 0, 11, 0)
+        wv_layout.setSpacing(6)
+
+        self.wine_version_label = QLabel("Nenhum selecionado")
+        self.wine_version_label.setStyleSheet("font-size: 14px; font-weight: 400; color: #71717a; background: transparent; border: none;")
+        self.wine_version_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        wv_layout.addWidget(self.wine_version_label)
+        wv_layout.addStretch()
+
+        inspector_layout.addWidget(self.wine_version_frame)
         inspector_layout.addSpacing(8)
 
         # Trainer Path Section
@@ -1028,7 +1699,16 @@ class ProtonRunner(QWidget):
         self.open_folder_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.open_folder_btn.clicked.connect(self._open_prefix_folder)
         qa_grid.addWidget(self.open_folder_btn, 1, 0)
-        for button in (self.ce_btn, self.wemod_btn, self.open_folder_btn):
+
+        self.open_logs_btn = RoundedButton(" Logs")
+        self.open_logs_btn.setIcon(get_log_icon(16))
+        self.open_logs_btn.setObjectName("quickActionBtn")
+        self.open_logs_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.open_logs_btn.setToolTip("Abrir pasta de logs de erros/crashes na raiz do app")
+        self.open_logs_btn.clicked.connect(self._open_logs_folder)
+        qa_grid.addWidget(self.open_logs_btn, 1, 1)
+
+        for button in (self.ce_btn, self.wemod_btn, self.open_folder_btn, self.open_logs_btn):
             button.setFixedHeight(53)
 
         inspector_layout.addLayout(qa_grid)
@@ -1096,10 +1776,16 @@ class ProtonRunner(QWidget):
         if event.position().y() < 62:
             self._toggle_maximized()
 
-    def _quick_menu(self):
+    def _create_menu(self):
         menu = QMenu(self)
+        menu.setStyleSheet(styles.MENU_STYLESHEET)
+        return menu
+
+    def _quick_menu(self):
+        menu = self._create_menu()
         menu.addAction('Adicionar Prefixo', self._add_custom_prefix)
         menu.addAction('Atualizar Lista', self._refresh)
+        menu.addAction('Abrir Pasta de Logs', self._open_logs_folder)
         menu.addAction('Configurações', self._open_settings)
         menu.exec(self.search_bar.mapToGlobal(self.search_bar.rect().bottomRight()))
 
@@ -1128,39 +1814,94 @@ class ProtonRunner(QWidget):
         sel_data = self._selected_data()
         sel_pfx = sel_data.get('wineprefix') if sel_data else None
 
-        self.tree.clear()
+        # ── 1. Populate Active Processes ─────────────────────────────
+        self.proc_tree.clear()
         running_entries = get_running_wine_entries()
-        running_prefixes = {p['wineprefix'] for p in running_entries if p.get('wineprefix')}
-        running_pids = {p['pid'] for p in running_entries if p.get('pid')}
 
-        matched_item = None
-        first_item = None
+        proc_first_item = None
+        proc_matched_item = None
+        for p in running_entries:
+            pid = str(p.get('pid', ''))
+            name = p.get('name', '')
+            comm = p.get('comm', '')
+            display_name = f"{name} ({comm})" if comm and comm != name else name
+            runner = "Proton" if p.get('is_proton') else "Wine"
+            status = "Rodando"
+            pfx = p.get('wineprefix', '')
 
-        for e in get_all_entries():
-            pfx = e.get('wineprefix', '')
-            pid = e.get('pid')
-            is_running = (pid in running_pids) or (bool(pfx) and pfx in running_prefixes)
-            status = "Active" if is_running else "Idle"
+            item = QTreeWidgetItem([pid, display_name, runner, status])
+            item.setData(0, Qt.ItemDataRole.UserRole, p)
+            self.proc_tree.addTopLevelItem(item)
 
-            item = QTreeWidgetItem([
-                e['name'],
-                e.get('source', ''),
-                pfx,
-                status,
-            ])
-            item.setData(0, Qt.ItemDataRole.UserRole, e)
-            self.tree.addTopLevelItem(item)
-
-            if not first_item and pfx:
-                first_item = item
+            if not proc_first_item and pfx:
+                proc_first_item = item
             if sel_pfx and pfx == sel_pfx:
-                matched_item = item
+                proc_matched_item = item
+
+        self.tab_proc_btn.setText(f"⚡ Processos Ativos ({len(running_entries)})")
+
+        # ── 2. Populate Installed Prefixes (Steam, Launchers, Custom) ──
+        self.pref_tree.clear()
+        pref_entries = []
+        seen_pfx = set()
+        hidden = set(load_config().get('hidden_prefixes', []))
+
+        def _add_pref(entry):
+            pfx = entry.get('wineprefix', '')
+            key = f"{entry.get('source','')}:{pfx}"
+            if key not in seen_pfx:
+                seen_pfx.add(key)
+                if pfx in hidden and entry.get('source') != 'Não-Steam':
+                    return
+                pref_entries.append(entry)
+
+        for g in get_steam_games():
+            _add_pref(g)
+
+        for l in get_launcher_prefixes():
+            _add_pref(l)
+
+        for c in get_custom_prefixes():
+            pfx = c.get('wineprefix', '')
+            if pfx:
+                _add_pref({
+                    'name': c.get('name', pfx),
+                    'appid': None,
+                    'wineprefix': pfx,
+                    'source': 'Personalizado',
+                    'exe': '',
+                    'is_proton': False,
+                })
+
+        pref_first_item = None
+        pref_matched_item = None
+
+        for e in pref_entries:
+            pfx = e.get('wineprefix', '')
+            name = e.get('name', '')
+            source = e.get('source', '')
+            arch = "win64"
+
+            has_wemod = bool(pfx and wm.is_wemod_installed(pfx))
+            wemod_label = "✓ Instalado" if has_wemod else "Não instalado"
+
+            item = QTreeWidgetItem([name, source, arch, wemod_label])
+            item.setData(0, Qt.ItemDataRole.UserRole, e)
+            self.pref_tree.addTopLevelItem(item)
+
+            if not pref_first_item and pfx:
+                pref_first_item = item
+            if sel_pfx and pfx == sel_pfx:
+                pref_matched_item = item
+
+        self.tab_pref_btn.setText(f"📁 Prefixos Instalados ({self.pref_tree.topLevelItemCount()})")
 
         self._apply_filters()
 
-        target = matched_item or first_item
+        curr_tree = self.proc_tree if self.view_stack.currentIndex() == 0 else self.pref_tree
+        target = (proc_matched_item or proc_first_item) if self.view_stack.currentIndex() == 0 else (pref_matched_item or pref_first_item)
         if target:
-            self.tree.setCurrentItem(target)
+            curr_tree.setCurrentItem(target)
 
     # ── Filtering ────────────────────────────────────────────────────
 
@@ -1168,33 +1909,48 @@ class ProtonRunner(QWidget):
         search_query = self.search_bar.text().strip().lower()
         active_chip = self.chip_bar.get_active_filter()
 
-        for i in range(self.tree.topLevelItemCount()):
-            item = self.tree.topLevelItem(i)
+        # Filters for Active Processes Tree
+        for i in range(self.proc_tree.topLevelItemCount()):
+            item = self.proc_tree.topLevelItem(i)
             data = item.data(0, Qt.ItemDataRole.UserRole) or {}
+            pid = str(data.get('pid') or '')
+            name = (data.get('name') or '').lower()
+            exe = (data.get('exe') or '').lower()
+            pfx = (data.get('wineprefix') or '').lower()
 
+            match = True
+            if search_query:
+                match = (search_query in pid or search_query in name or search_query in exe or search_query in pfx)
+            item.setHidden(not match)
+
+        # Filters for Installed Prefixes Tree
+        for i in range(self.pref_tree.topLevelItemCount()):
+            item = self.pref_tree.topLevelItem(i)
+            data = item.data(0, Qt.ItemDataRole.UserRole) or {}
             name = (data.get('name') or '').lower()
             source = (data.get('source') or '').lower()
-            pfx = (data.get('wineprefix') or '').lower()
             appid = str(data.get('appid') or '')
-            is_active = (item.text(3).lower() == 'active')
+            pfx = (data.get('wineprefix') or '').lower()
 
             chip_match = True
             if active_chip == 'STEAM':
                 chip_match = ('steam' in source)
+            elif active_chip == 'HEROIC':
+                chip_match = ('heroic' in source)
             elif active_chip == 'LUTRIS':
                 chip_match = ('lutris' in source)
             elif active_chip == 'BOTTLES':
                 chip_match = ('bottles' in source)
-            elif active_chip == 'ACTIVE':
-                chip_match = is_active
+            elif active_chip == 'CUSTOM':
+                chip_match = ('custom' in source or 'personalizado' in source or 'não-steam' in source)
 
             search_match = True
             if search_query:
                 search_match = (
                     search_query in name or
                     search_query in source or
-                    search_query in pfx or
-                    search_query in appid
+                    search_query in appid or
+                    search_query in pfx
                 )
 
             item.setHidden(not (chip_match and search_match))
@@ -1202,14 +1958,26 @@ class ProtonRunner(QWidget):
     # ── Selection & Inspector Sync ───────────────────────────────────
 
     def _selected_data(self):
-        sel = self.tree.selectedItems()
+        curr_tree = self.proc_tree if (hasattr(self, 'view_stack') and self.view_stack.currentIndex() == 0) else getattr(self, 'pref_tree', None)
+        if not curr_tree:
+            return None
+        sel = curr_tree.selectedItems()
         return sel[0].data(0, Qt.ItemDataRole.UserRole) if sel else None
 
     def _on_item_selected(self):
         data = self._selected_data()
         if not data:
             self.banner_widget.set_game("Select a Game", "", "")
-            self.wine_version_combo.clear()
+            self._current_wine_bin = None
+            if hasattr(self, 'wine_version_label'):
+                self.wine_version_label.setText("Nenhum selecionado")
+                self.wine_version_label.setStyleSheet("font-size: 14px; font-weight: 400; color: #71717a; background: transparent; border: none;")
+            if hasattr(self, 'wine_version_frame'):
+                self.wine_version_frame.setToolTip("")
+            if hasattr(self, 'pfx_path_label'):
+                self.pfx_path_label.setText("Nenhum prefixo selecionado")
+            if hasattr(self, 'add_to_lib_btn'):
+                self.add_to_lib_btn.setVisible(False)
             return
 
         name = data.get('name', 'Unknown')
@@ -1219,10 +1987,50 @@ class ProtonRunner(QWidget):
 
         self.banner_widget.set_game(name, source, appid)
 
-        self.wine_version_combo.clear()
-        runners = get_available_wine_runners(pfx)
-        for label, path in runners:
-            self.wine_version_combo.addItem(label, path)
+        if hasattr(self, 'pfx_path_label'):
+            self.pfx_path_label.setText(pfx if pfx else "Nenhum prefixo associado")
+
+        if hasattr(self, 'add_to_lib_btn'):
+            is_proc = bool(data.get('pid'))
+            cfg = load_config()
+            saved_pfxs = {c.get('wineprefix') for c in cfg.get('custom_prefixes', [])}
+            can_save = is_proc and pfx and (pfx not in saved_pfxs)
+            self.add_to_lib_btn.setVisible(bool(can_save))
+
+        live_bin = (data.get('wine_bin') or '').strip() if isinstance(data.get('wine_bin'), str) else data.get('wine_bin')
+        pid = data.get('pid')
+        wine_bin = None
+        is_live = False
+
+        if live_bin and os.path.isfile(live_bin):
+            wine_bin = os.path.realpath(live_bin)
+            is_live = True
+        elif pid:
+            found = _find_wine_bin_for_pid(pid)
+            if found and os.path.isfile(found):
+                wine_bin = os.path.realpath(found)
+                is_live = True
+
+        if not wine_bin and pfx:
+            found = find_wine_binary(pfx)
+            if found and os.path.isfile(found):
+                wine_bin = os.path.realpath(found)
+
+        self._current_wine_bin = wine_bin
+
+        if hasattr(self, 'wine_version_label'):
+            if wine_bin:
+                label = get_wine_runner_label(wine_bin, pfx)
+                display_text = f"{label} (Em execução)" if is_live else label
+                self.wine_version_label.setText(display_text)
+                self.wine_version_label.setStyleSheet("font-size: 14px; font-weight: 400; color: #eeeeef; background: transparent; border: none;")
+                if hasattr(self, 'wine_version_frame'):
+                    self.wine_version_frame.setToolTip(f"Binário: {wine_bin}")
+            else:
+                self.wine_version_label.setText("Não detectado")
+                self.wine_version_label.setStyleSheet("font-size: 14px; font-weight: 400; color: #71717a; background: transparent; border: none;")
+                if hasattr(self, 'wine_version_frame'):
+                    self.wine_version_frame.setToolTip("")
 
     # ── Actions ──────────────────────────────────────────────────────
 
@@ -1254,16 +2062,25 @@ class ProtonRunner(QWidget):
             if not exe or not os.path.isfile(exe):
                 return
 
-        idx = self.wine_version_combo.currentIndex()
-        if idx >= 0 and self.wine_version_combo.itemData(idx):
-            wine_bin = self.wine_version_combo.itemData(idx)
-        else:
+        wine_bin = getattr(self, '_current_wine_bin', None)
+        if not wine_bin or not os.path.isfile(wine_bin):
+            live_bin = data.get('wine_bin')
             pid = data.get('pid')
-            wine_bin = (_find_wine_bin_for_pid(pid) or find_wine_binary(pfx)) if pid else find_wine_binary(pfx)
+            if live_bin and os.path.isfile(live_bin):
+                wine_bin = live_bin
+            else:
+                wine_bin = (_find_wine_bin_for_pid(pid) or find_wine_binary(pfx)) if pid else find_wine_binary(pfx)
 
+        game_name = data.get('name', '')
+        trainer_name = f"Trainer_{os.path.basename(exe)}"
         try:
-            logfile = run_exe_in_prefix(wine_bin, exe, pfx)
-            self._show_toast(f"✓ Trainer iniciado! (log: {logfile})")
+            run_exe_in_prefix(
+                wine_bin, exe, pfx,
+                game_name=game_name,
+                app_name=trainer_name,
+                on_error_callback=self._on_process_error
+            )
+            self._show_toast("✓ Trainer iniciado!")
         except Exception as e:
             self._show_toast(f"✗ Falha ao iniciar trainer: {e}", is_error=True)
 
@@ -1299,18 +2116,46 @@ class ProtonRunner(QWidget):
             else:
                 return
 
-        idx = self.wine_version_combo.currentIndex()
-        if idx >= 0 and self.wine_version_combo.itemData(idx):
-            wine_bin = self.wine_version_combo.itemData(idx)
-        else:
+        wine_bin = getattr(self, '_current_wine_bin', None)
+        if not wine_bin or not os.path.isfile(wine_bin):
+            live_bin = data.get('wine_bin')
             pid = data.get('pid')
-            wine_bin = (_find_wine_bin_for_pid(pid) or find_wine_binary(pfx)) if pid else find_wine_binary(pfx)
+            if live_bin and os.path.isfile(live_bin):
+                wine_bin = live_bin
+            else:
+                wine_bin = (_find_wine_bin_for_pid(pid) or find_wine_binary(pfx)) if pid else find_wine_binary(pfx)
 
+        game_name = data.get('name', '')
         try:
-            logfile = run_exe_in_prefix(wine_bin, ce_exe, pfx)
-            self._show_toast(f"✓ Cheat Engine iniciado! (log: {logfile})")
+            # O Cheat Engine e um executavel nativo (Lazarus/FPC, sem WPF ou
+            # .NET): o prepare do prefixo (reg add Avalon.Graphics) e
+            # desnecessario e, com o jogo rodando, pode bloquear no
+            # wineserver e abortar o lancamento. Pula essa etapa para o CE.
+            run_exe_in_prefix(
+                wine_bin, ce_exe, pfx,
+                prepare_prefix=False,
+                game_name=game_name,
+                app_name="CheatEngine",
+                on_error_callback=self._on_process_error
+            )
+            self._show_toast("✓ Cheat Engine iniciado!")
         except Exception as e:
             self._show_toast(f"✗ Falha ao iniciar Cheat Engine: {e}", is_error=True)
+
+    def _open_logs_folder(self):
+        logs_dir = error_logger.get_logs_dir()
+        if error_logger.open_logs_folder():
+            self._show_toast("✓ Pasta de logs aberta")
+        else:
+            self._show_toast(f"✗ Falha ao abrir pasta de logs ({logs_dir})", is_error=True)
+
+    def _on_process_error(self, log_path, msg):
+        self.process_error_detected.emit(log_path, msg)
+
+    def _handle_process_error(self, log_path, msg):
+        log_name = os.path.basename(log_path)
+        self._show_toast(f"✗ Erro/Crash detectado! Log salvo: {log_name}", is_error=True)
+        self._log(f"Problema detectado: log gerado em {log_path}")
 
     def _open_wemod_modal(self):
         data = self._selected_data()
@@ -1321,6 +2166,24 @@ class ProtonRunner(QWidget):
         name = data.get('name', 'Jogo')
         dlg = WeModDialog(pfx, name, self)
         dlg.exec()
+
+    def _copy_prefix_path(self):
+        data = self._selected_data()
+        if not data:
+            return
+        pfx = data.get('wineprefix', '')
+        if pfx:
+            QApplication.clipboard().setText(pfx)
+            self._show_toast("✓ Caminho do WINEPREFIX copiado!")
+
+    def _save_selected_to_custom_prefixes(self):
+        data = self._selected_data()
+        if not data:
+            return
+        pfx = data.get('wineprefix', '')
+        name = data.get('name', '')
+        if pfx:
+            self._save_existing_to_custom_prefixes(pfx, name)
 
     def _open_prefix_folder(self):
         data = self._selected_data()
@@ -1338,13 +2201,48 @@ class ProtonRunner(QWidget):
 
     # ── Context Menu (Right Click) ───────────────────────────────────
 
+    def _save_existing_to_custom_prefixes(self, pfx, default_name=''):
+        clean_name = default_name
+        for tag in ('Launcher: ', 'Hydra: ', 'Lutris: ', 'Heroic: ', 'Bottles: ', 'PlayOnLinux: ', 'PortProton: '):
+            if clean_name.startswith(tag):
+                clean_name = clean_name[len(tag):].strip()
+        if clean_name.endswith(' [Proton]'):
+            clean_name = clean_name[:-9].strip()
+
+        name, ok = QInputDialog.getText(
+            self, 'Adicionar à Lista de Prefixos',
+            'Nome para o prefixo:', text=clean_name
+        )
+        if not ok or not name.strip():
+            return
+        cfg = load_config()
+        custom = cfg.setdefault('custom_prefixes', [])
+        for c in custom:
+            if c.get('wineprefix') == pfx:
+                QMessageBox.information(self, 'Info', 'Este prefixo já está na lista de prefixos.')
+                return
+        custom.append({'name': name.strip(), 'wineprefix': pfx})
+        save_config(cfg)
+        self._refresh()
+        self._show_toast(f"✓ Prefixo adicionado à lista: {name.strip()}")
+
     def _tree_context_menu(self, pos):
-        item = self.tree.itemAt(pos)
+        curr_tree = self.tree
+        if not curr_tree:
+            return
+        item = curr_tree.itemAt(pos)
         if not item:
-            menu = QMenu(self)
+            menu = self._create_menu()
+            act_add = menu.addAction('Adicionar Prefixo...')
+            menu.addSeparator()
+            act_refresh = menu.addAction('Atualizar Lista')
             act_show = menu.addAction('Mostrar Prefixos Ocultos')
-            action = menu.exec(self.tree.viewport().mapToGlobal(pos))
-            if action == act_show:
+            action = menu.exec(curr_tree.viewport().mapToGlobal(pos))
+            if action == act_add:
+                self._add_custom_prefix()
+            elif action == act_refresh:
+                self._refresh()
+            elif action == act_show:
                 self._show_hidden_prefixes()
             return
 
@@ -1352,48 +2250,81 @@ class ProtonRunner(QWidget):
         if not data:
             return
         pfx = data.get('wineprefix', '')
-        if not pfx:
-            return
         has_pid = bool(data.get('pid')) or any(
             p.get('wineprefix') == pfx for p in get_running_wine_entries()
         )
+        is_proc_tab = (hasattr(self, 'view_stack') and self.view_stack.currentIndex() == 0)
 
-        menu = QMenu(self)
-        act_copy = menu.addAction('Copiar WINEPREFIX')
-        act_open = menu.addAction('Abrir pasta do WINEPREFIX')
+        menu = self._create_menu()
+
+        # Opção destacada para salvar prefixo de processo ativo
+        act_add_to_list = None
+        cfg = load_config()
+        saved_pfxs = {c.get('wineprefix') for c in cfg.get('custom_prefixes', [])}
+        if pfx and pfx not in saved_pfxs:
+            act_add_to_list = menu.addAction('➕ Adicionar este Prefixo à Lista de Prefixos')
+
+        if pfx:
+            act_open = menu.addAction('Abrir pasta do WINEPREFIX')
+            act_copy = menu.addAction('Copiar caminho WINEPREFIX')
+        else:
+            act_open = None
+            act_copy = None
+
+        menu.addSeparator()
+        act_trainer = menu.addAction('Executar Trainer (.exe)...')
+        act_wemod = menu.addAction('Gerenciador WeMod...')
+        act_ce = menu.addAction('Iniciar Cheat Engine')
+
         if has_pid:
-            act_kill = menu.addAction('Matar Processo')
-        menu.addSeparator()
+            menu.addSeparator()
+            act_kill = menu.addAction('Finalizar Processo (Kill)')
+        else:
+            act_kill = None
 
-        save_menu = menu.addMenu('Salvar como')
-        act_backup = save_menu.addAction('Backup')
-        act_standard = save_menu.addAction('Prefixo Padrão')
-        act_restore = menu.addAction('Restaurar Backup')
-        menu.addSeparator()
+        if not is_proc_tab:
+            menu.addSeparator()
+            save_menu = menu.addMenu('Salvar como')
+            act_backup = save_menu.addAction('Backup')
+            act_standard = save_menu.addAction('Prefixo Padrão')
+            act_restore = menu.addAction('Restaurar Backup')
+            menu.addSeparator()
+            act_hide = menu.addAction('Ocultar Prefixo')
+            act_remove = menu.addAction('Remover Prefixo do Disco')
+        else:
+            act_backup = act_standard = act_restore = act_hide = act_remove = None
 
-        act_hide = menu.addAction('Ocultar Prefixo')
-        act_remove = menu.addAction('Remover Prefixo')
-
-        action = menu.exec(self.tree.viewport().mapToGlobal(pos))
-        if action == act_copy:
+        action = menu.exec(curr_tree.viewport().mapToGlobal(pos))
+        if act_add_to_list and action == act_add_to_list:
+            self._save_existing_to_custom_prefixes(pfx, data.get('name', ''))
+        elif act_copy and action == act_copy:
             QApplication.clipboard().setText(pfx)
             self._show_toast("✓ WINEPREFIX copiado para a área de transferência")
-        elif action == act_open:
+        elif act_open and action == act_open:
             if os.path.isdir(pfx):
                 subprocess.Popen(['xdg-open', pfx])
-        elif has_pid and action == act_kill:
+                self._show_toast(f"✓ Pasta aberta: {os.path.basename(pfx)}")
+        elif action == act_trainer:
+            self._launch_trainer()
+        elif action == act_wemod:
+            dlg = WeModDialog(pfx, data.get('name', 'Jogo'), self)
+            dlg.exec()
+            self._load_tree()
+        elif action == act_ce:
+            self._run_ce_inspector()
+        elif has_pid and act_kill and action == act_kill:
             self._kill_prefix_processes(pfx)
             self._refresh()
-        elif action == act_backup:
-            self._backup_prefix(pfx, data.get('source') == 'Não-Steam')
-        elif action == act_standard:
-            self._save_as_standard_prefix(pfx, data.get('source') == 'Não-Steam')
-        elif action == act_restore:
-            self._restore_backup(pfx, data.get('source') == 'Não-Steam')
-        elif action == act_hide:
+        elif act_backup and action == act_backup:
+            self._backup_prefix(pfx, data.get('source') in ('Personalizado', 'Não-Steam'))
+        elif act_standard and action == act_standard:
+            self._save_as_standard_prefix(pfx, data.get('source') in ('Personalizado', 'Não-Steam'))
+        elif act_restore and action == act_restore:
+            self._restore_backup(pfx, data.get('source') in ('Personalizado', 'Não-Steam'))
+        elif act_hide and action == act_hide:
             self._hide_prefix(pfx)
-        elif action == act_remove:
-            self._remove_prefix(pfx, data.get('source') == 'Não-Steam')
+        elif act_remove and action == act_remove:
+            self._remove_prefix(pfx, data.get('source') in ('Personalizado', 'Não-Steam'))
 
     # ── Prefix Management & Backups ──────────────────────────────────
 
@@ -1466,7 +2397,31 @@ class ProtonRunner(QWidget):
         if not os.path.isdir(pfx):
             QMessageBox.warning(self, 'Aviso', 'Prefixo não existe no disco.')
             return
-        delete_target = os.path.dirname(pfx) if not is_custom else pfx
+
+        delete_target = _resolve_prefix_root(pfx)
+
+        # Proteção contra exclusão acidental de diretórios do sistema ou bibliotecas
+        home = os.path.expanduser('~')
+        critical_roots = {
+            os.path.abspath(home),
+            os.path.abspath('/'),
+            os.path.abspath(os.path.join(home, '.config')),
+            os.path.abspath(os.path.join(home, 'Games')),
+            os.path.abspath(os.path.join(home, 'wineprefixes')),
+            os.path.abspath(os.path.join(home, '.config/hydralauncher/wine-prefixes')),
+            os.path.abspath(os.path.join(home, '.var/app/io.github.hydralauncher.hydra/config/hydralauncher/wine-prefixes')),
+            os.path.abspath(os.path.join(home, '.PlayOnLinux/wineprefix')),
+            os.path.abspath(os.path.join(home, 'PortProton/prefixes')),
+            os.path.abspath(os.path.join(home, '.local/share/bottles/bottles')),
+            os.path.abspath(os.path.join(home, '.var/app/com.usebottles.bottles/data/bottles')),
+        }
+        if os.path.abspath(delete_target) in critical_roots:
+            QMessageBox.critical(
+                self, 'Erro de Segurança',
+                f'Operação cancelada: a pasta alvo ({delete_target}) é um diretório raiz ou de biblioteca do sistema.'
+            )
+            return
+
         reply = QMessageBox.question(
             self, 'Confirmar',
             f'Tem certeza que deseja apagar permanentemente a pasta do prefixo?\n{delete_target}',
@@ -1479,9 +2434,9 @@ class ProtonRunner(QWidget):
         if result.returncode != 0:
             QMessageBox.critical(self, 'Erro', f'Não foi possível apagar o prefixo:\n{result.stderr}')
             return
-        if is_custom:
-            cfg = load_config()
-            cfg['custom_prefixes'] = [c for c in cfg.get('custom_prefixes', []) if c['wineprefix'] != pfx]
+        cfg = load_config()
+        if 'custom_prefixes' in cfg:
+            cfg['custom_prefixes'] = [c for c in cfg['custom_prefixes'] if c.get('wineprefix') != pfx]
             save_config(cfg)
         self._refresh()
         self._show_toast("✓ Prefixo apagado do disco")
@@ -1536,7 +2491,7 @@ class ProtonRunner(QWidget):
                 self._wemod_built_close_btn.setVisible(True)
 
     def _backup_prefix(self, pfx, is_custom=False):
-        source = os.path.dirname(pfx) if not is_custom else pfx
+        source = _resolve_prefix_root(pfx)
         if not os.path.isdir(source):
             QMessageBox.warning(self, 'Aviso', 'Pasta do prefixo não encontrada.')
             return
@@ -1602,7 +2557,7 @@ class ProtonRunner(QWidget):
         threading.Thread(target=task, daemon=True).start()
 
     def _save_as_standard_prefix(self, pfx, is_custom=False):
-        source = os.path.dirname(pfx) if not is_custom else pfx
+        source = _resolve_prefix_root(pfx)
         if not os.path.isdir(source):
             QMessageBox.warning(self, 'Aviso', 'Pasta do prefixo não encontrada.')
             return
@@ -1669,7 +2624,7 @@ class ProtonRunner(QWidget):
         threading.Thread(target=task, daemon=True).start()
 
     def _restore_backup(self, pfx, is_custom=False):
-        source = os.path.dirname(pfx) if not is_custom else pfx
+        source = _resolve_prefix_root(pfx)
         if not os.path.isdir(source):
             QMessageBox.warning(self, 'Aviso', 'Pasta do prefixo não encontrada.')
             return
@@ -1736,7 +2691,9 @@ class ProtonRunner(QWidget):
 # ── entry point ────────────────────────────────────────────────────
 
 def main():
+    error_logger.setup_global_exception_handler()
     app = QApplication(sys.argv)
+    app.setStyleSheet(styles.GLOBAL_STYLESHEET)
     app.setApplicationName('Action Shark')
     app.setDesktopFileName('trainer_manager')
     app.setWindowIcon(get_shark_icon())

@@ -317,6 +317,28 @@ QPushButton#chipBtn[selected="true"] {{
     border: 1px solid {ACCENT_COLOR};
 }}
 
+/* Navigation Segmented Tab Buttons (Active Processes vs Installed Prefixes) */
+QPushButton#navTabBtn {{
+    background-color: transparent;
+    color: #9ca3af;
+    border: 1px solid transparent;
+    border-radius: 7px;
+    padding: 5px 14px;
+    font-size: 13px;
+    font-weight: 500;
+}}
+
+QPushButton#navTabBtn:hover {{
+    color: #f3f4f6;
+    background-color: rgba(255, 255, 255, 0.05);
+}}
+
+QPushButton#navTabBtn[selected="true"] {{
+    background-color: #272836;
+    color: #ffffff;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+}}
+
 /* Top Bar Icon Buttons (Settings, Refresh, Filter) */
 QPushButton.iconBtn {{
     background-color: {CARD_BG};
@@ -376,27 +398,35 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
 
 /* ── Menus (Right-Click Context Menus) ── */
 QMenu {{
-    background-color: {PANEL_BG};
-    color: {TEXT_PRIMARY};
-    border: 1px solid {BORDER_SUBTLE};
-    border-radius: 10px;
-    padding: 6px;
+    background-color: #202127;
+    color: #eeeeef;
+    border: 1px solid #3a3b46;
+    border-radius: 8px;
+    padding: 6px 4px;
 }}
 
 QMenu::item {{
-    padding: 8px 24px 8px 12px;
+    background-color: transparent;
+    color: #eeeeef;
+    padding: 7px 28px 7px 14px;
     border-radius: 6px;
+    margin: 2px 4px;
 }}
 
 QMenu::item:selected {{
-    background-color: {ROW_SELECTED};
+    background-color: #3b3d59;
     color: #ffffff;
+}}
+
+QMenu::item:disabled {{
+    color: #6c6d7a;
+    background-color: transparent;
 }}
 
 QMenu::separator {{
     height: 1px;
-    background-color: {BORDER_SUBTLE};
-    margin: 6px 4px;
+    background-color: #353640;
+    margin: 6px 8px;
 }}
 
 /* ── Dialogs ── */
@@ -442,8 +472,9 @@ QLineEdit, QComboBox { background: #202127; border: 1px solid #3a3b46; border-ra
 QLineEdit#searchBar { background: #24252d; border-color: #393a46; padding: 5px 8px; min-width: 0; max-width: 16777215; min-height: 0; max-height: 16777215; font-size: 15px; }
 QComboBox { border-color: #8181c9; min-height: 0; }
 QPushButton#chipBtn { padding: 0 12px; font-size: 15px; font-weight: 400; }
-QPushButton#quickActionBtn { padding: 0; font-size: 15px; font-weight: 400; min-height: 0; }
+QPushButton#quickActionBtn { padding: 4px 8px; font-size: 12px; font-weight: 500; min-height: 0; }
 QFrame#trainerField { background: #202127; border: 1px solid #3a3b46; border-radius: 9px; }
+QFrame#wineVersionFrame { background: #202127; border: 1px solid #3a3b46; border-radius: 8px; }
 QLineEdit#trainerInput { background: transparent; border: none; padding: 0 7px; }
 QFrame#divider { background: #353640; }
 QDialog#settingsDialog { background: #25262d; }
@@ -454,3 +485,36 @@ QDialog#settingsDialog QListWidget::item:selected { background: #3b3d59; }
 QDialog#settingsDialog QPushButton#saveSettings { background: #696cde; border-color: #777ae7; color: white; }
 QDialog#settingsDialog QPushButton#saveSettings:hover { background: #777ae7; }
 """
+
+# Context Menu specific rules - placed after generic QWidget rules to prevent transparent override
+MENU_STYLESHEET = """
+QMenu {
+    background-color: #202127;
+    color: #eeeeef;
+    border: 1px solid #3a3b46;
+    border-radius: 8px;
+    padding: 6px 4px;
+}
+QMenu::item {
+    background-color: transparent;
+    color: #eeeeef;
+    padding: 7px 28px 7px 14px;
+    border-radius: 6px;
+    margin: 2px 4px;
+}
+QMenu::item:selected {
+    background-color: #3b3d59;
+    color: #ffffff;
+}
+QMenu::item:disabled {
+    color: #6c6d7a;
+    background-color: transparent;
+}
+QMenu::separator {
+    height: 1px;
+    background-color: #353640;
+    margin: 6px 8px;
+}
+"""
+
+GLOBAL_STYLESHEET += MENU_STYLESHEET

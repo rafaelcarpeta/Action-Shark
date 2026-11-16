@@ -40,6 +40,7 @@ from PyQt6.QtGui import (
 
 import styles
 import wemod_manager as wm
+import error_logger
 
 
 CACHE_DIR = os.path.expanduser('~/.cache/action_shark')
@@ -124,6 +125,31 @@ def get_folder_icon(size: int = 18) -> QIcon:
 
     p.setPen(QPen(QColor('#c5c7cf'), 1.1))
     p.drawPath(path)
+    p.end()
+    return QIcon(pix)
+
+
+def get_log_icon(size: int = 18) -> QIcon:
+    """Draws clean document/log icon."""
+    pix = QPixmap(size, size)
+    pix.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pix)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+    w = size * 0.70
+    h = size * 0.85
+    x = (size - w) / 2.0
+    y = (size - h) / 2.0
+
+    pen = QPen(QColor('#c5c7cf'), 1.2)
+    p.setPen(pen)
+    p.drawRoundedRect(QRectF(x, y, w, h), 2.0, 2.0)
+
+    line_pen = QPen(QColor('#9ca3af'), 1.1)
+    p.setPen(line_pen)
+    p.drawLine(QPointF(x + 3, y + h * 0.32), QPointF(x + w - 3, y + h * 0.32))
+    p.drawLine(QPointF(x + 3, y + h * 0.52), QPointF(x + w - 3, y + h * 0.52))
+    p.drawLine(QPointF(x + 3, y + h * 0.72), QPointF(x + w * 0.65, y + h * 0.72))
     p.end()
     return QIcon(pix)
 
@@ -344,38 +370,40 @@ class StatusBadgeDelegate(QStyledItemDelegate):
             painter.save()
             painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-            status_text = index.data(Qt.ItemDataRole.DisplayRole) or "Idle"
+            status_text = str(index.data(Qt.ItemDataRole.DisplayRole) or "")
             rect = option.rect
 
-            badge_w = 60 if status_text.lower() == "active" else 44
-            badge_h = 24
-            badge_x = rect.x() + 12
+            font = painter.font()
+            font.setPixelSize(12)
+            font.setBold(False)
+            painter.setFont(font)
+            fm = painter.fontMetrics()
+
+            badge_w = max(fm.horizontalAdvance(status_text) + 18, 48)
+            badge_h = 22
+            badge_x = rect.x() + 10
             badge_y = rect.y() + (rect.height() - badge_h) // 2
             badge_rect = QRectF(badge_x, badge_y, badge_w, badge_h)
 
-            is_active = (status_text.lower() == "active")
+            st_lower = status_text.lower()
+            is_positive = (st_lower in ("active", "rodando")) or ("instalado" in st_lower and "não" not in st_lower)
 
-            if is_active:
-                bg_color = QColor(34, 197, 94, 40)
-                border_color = QColor(34, 197, 94, 80)
+            if is_positive:
+                bg_color = QColor(34, 197, 94, 35)
+                border_color = QColor(34, 197, 94, 75)
                 text_color = QColor(52, 211, 153)
             else:
-                bg_color = QColor(255, 255, 255, 12)
-                border_color = QColor(255, 255, 255, 22)
-                text_color = QColor('#dddddf')
+                bg_color = QColor(255, 255, 255, 10)
+                border_color = QColor(255, 255, 255, 18)
+                text_color = QColor('#9ca3af')
 
             path = QPainterPath()
-            path.addRoundedRect(badge_rect, 12, 12)
+            path.addRoundedRect(badge_rect, 11, 11)
             painter.fillPath(path, QBrush(bg_color))
             painter.setPen(QPen(border_color, 1))
             painter.drawPath(path)
 
             painter.setPen(text_color)
-            font = painter.font()
-            font.setPixelSize(14)
-            font.setBold(False)
-            painter.setFont(font)
-
             painter.drawText(badge_rect.toRect(), Qt.AlignmentFlag.AlignCenter, status_text)
             painter.restore()
         else:
@@ -405,11 +433,12 @@ class FilterChipBar(QWidget):
         layout.setSpacing(8)
 
         chips = [
-            ("ALL", "[All]"),
+            ("ALL", "Todos"),
             ("STEAM", "Steam"),
+            ("HEROIC", "Heroic"),
             ("LUTRIS", "Lutris"),
             ("BOTTLES", "Bottles"),
-            ("ACTIVE", "Active"),
+            ("CUSTOM", "Personalizados"),
         ]
 
         for code, label in chips:
@@ -806,13 +835,21 @@ class WeModDialog(QDialog):
             return
         self.log("Iniciando WeMod...")
 
+        def _on_error(log_path, _summary):
+            log_name = os.path.basename(log_path)
+            self.log_message.emit(f"✗ Erro/Crash no WeMod: log salvo em logs/{log_name}")
+
         def task():
             try:
-                pid = wm.launch_wemod(self.prefix)
+                pid = wm.launch_wemod(
+                    self.prefix,
+                    game_name=self.game_name,
+                    on_error_callback=_on_error
+                )
                 if pid:
                     self.log_message.emit(f"✓ WeMod iniciado (PID {pid}).")
                 else:
-                    self.log_message.emit("✗ WeMod não iniciou; consulte o log do WeMod.")
+                    self.log_message.emit("✗ WeMod não iniciou. Verifique a pasta logs se houve falha.")
             except Exception as e:
                 self.log_message.emit(f"✗ Erro ao iniciar WeMod: {e}")
             finally:
@@ -872,7 +909,7 @@ class SettingsDialog(QDialog):
 
         self.setWindowTitle("Configurações — Action Shark")
         self.setObjectName('settingsDialog')
-        self.setMinimumSize(560, 420)
+        self.setMinimumSize(580, 490)
         self.setStyleSheet(styles.GLOBAL_STYLESHEET)
 
         self._init_ui()
@@ -923,6 +960,19 @@ class SettingsDialog(QDialog):
         unhide_btn = QPushButton("Restaurar / Reexibir Prefixo Selecionado")
         unhide_btn.clicked.connect(self._unhide_selected)
         layout.addWidget(unhide_btn)
+
+        layout.addWidget(QLabel("Pasta de Logs de Erros/Crashes (Raiz do App):"))
+        logs_box = QHBoxLayout()
+        self.logs_path_lbl = QLabel(error_logger.get_logs_dir())
+        self.logs_path_lbl.setStyleSheet("color: #9ca3af; font-family: monospace; font-size: 11px;")
+        self.logs_path_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        logs_box.addWidget(self.logs_path_lbl, stretch=1)
+        open_logs_btn = QPushButton("Abrir Pasta de Logs")
+        open_logs_btn.setObjectName("openLogsBtn")
+        open_logs_btn.setToolTip("Abrir pasta de logs na raiz do aplicativo")
+        open_logs_btn.clicked.connect(error_logger.open_logs_folder)
+        logs_box.addWidget(open_logs_btn)
+        layout.addLayout(logs_box)
 
         btn_row = QHBoxLayout()
         btn_row.addStretch()
