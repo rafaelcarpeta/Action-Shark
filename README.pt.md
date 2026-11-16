@@ -79,8 +79,19 @@ sudo dnf install python3-qt6 protontricks wine
 
 ## Instalação
 
+### Instalação Rápida (via terminal)
+
+Execute no terminal para baixar e instalar o Action Shark automaticamente com atalhos no menu e desktop:
+
 ```bash
-# Clone ou copie os arquivos
+curl -fsSL https://raw.githubusercontent.com/rafaelcarpeta/Action-Shark/main/install.sh | bash
+```
+
+### Instalação Manual
+
+```bash
+# Clone o repositório
+git clone https://github.com/rafaelcarpeta/Action-Shark.git
 cd Action-Shark/
 
 # Instale as dependências Python
@@ -90,13 +101,13 @@ pip install -r requirements.txt
 python3 trainer_manager.py
 ```
 
-### Instalação com atalhos (recomendado)
+### Instalação com atalhos (na pasta clonada)
 
 ```bash
 ./install.sh
 ```
 
-O script `install.sh` instala o atalho no menu de aplicações (`~/.local/share/applications/`) e opcionalmente no desktop, ajustando automaticamente o caminho do executável para a pasta atual.
+O script `install.sh` instala o atalho no menu de aplicações (`~/.local/share/applications/`) e opcionalmente no desktop, ajustando automaticamente o caminho do executável.
 
 ### Desinstalação
 

@@ -4,6 +4,7 @@ set -euo pipefail
 APP_DIR="$HOME/.local/share/applications"
 DESKTOP_FILE="$APP_DIR/trainer_manager.desktop"
 CONFIG_DIR="$HOME/.config/trainer_manager"
+DEFAULT_INSTALL_DIR="$HOME/.local/share/Action-Shark"
 
 echo "Removendo atalho do menu de aplicações..."
 if [ -f "$DESKTOP_FILE" ]; then
@@ -21,6 +22,16 @@ for d in "$HOME/Desktop" "$HOME/Área de Trabalho" "$HOME/Escritorio"; do
         echo "  Removido: $f"
     fi
 done
+
+if [ -d "$DEFAULT_INSTALL_DIR" ]; then
+    echo ""
+    echo "Deseja remover a pasta de instalação ($DEFAULT_INSTALL_DIR)?"
+    read -r -p "[s/N] " resp_dir
+    if [[ "$resp_dir" =~ ^[sSyY] ]]; then
+        rm -rf "$DEFAULT_INSTALL_DIR"
+        echo "  Removido: $DEFAULT_INSTALL_DIR"
+    fi
+fi
 
 echo ""
 echo "Deseja remover também a pasta de configuração ($CONFIG_DIR)?"
