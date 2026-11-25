@@ -462,6 +462,7 @@ QProgressBar::chunk {{
 # does not substitute a condensed/bold desktop font for the CSS fallback list.
 GLOBAL_STYLESHEET += """
 QWidget { background: transparent; color: #eeeeef; font-family: 'Noto Sans'; font-size: 15px; font-weight: 400; }
+QToolTip { background-color: #181920; color: #f3f4f6; border: 1px solid #3f4258; border-radius: 6px; padding: 6px 10px; font-size: 12px; }
 QFrame#tableContainer { background: #18191e; border-top-left-radius: 11px; border-bottom-left-radius: 11px; }
 QFrame#inspectorPanel { background: #25262d; border: none; border-top-right-radius: 11px; border-bottom-right-radius: 11px; }
 QSplitter::handle { background: #34353f; width: 1px; }
@@ -470,20 +471,42 @@ QTreeWidget::item { height: 40px; padding: 0; border: none; }
 QHeaderView::section { background: #18191e; color: #bcbcc3; border: none; border-right: 1px solid #34353f; padding: 7px 12px; font-size: 15px; font-weight: 400; }
 QLineEdit, QComboBox { background: #202127; border: 1px solid #3a3b46; border-radius: 8px; padding: 5px 11px; font-size: 15px; }
 QLineEdit#searchBar { background: #24252d; border-color: #393a46; padding: 5px 8px; min-width: 0; max-width: 16777215; min-height: 0; max-height: 16777215; font-size: 15px; }
-QComboBox { border-color: #8181c9; min-height: 0; }
+QComboBox { border-color: #8181c9; min-height: 24px; }
 QPushButton#chipBtn { padding: 0 12px; font-size: 15px; font-weight: 400; }
 QPushButton#quickActionBtn { padding: 4px 8px; font-size: 12px; font-weight: 500; min-height: 0; }
 QFrame#trainerField { background: #202127; border: 1px solid #3a3b46; border-radius: 9px; }
 QFrame#wineVersionFrame { background: #202127; border: 1px solid #3a3b46; border-radius: 8px; }
 QLineEdit#trainerInput { background: transparent; border: none; padding: 0 7px; }
 QFrame#divider { background: #353640; }
-QDialog#settingsDialog { background: #25262d; }
-QDialog#settingsDialog QPushButton { background: #25262d; border: 1px solid #3a3b46; }
-QDialog#settingsDialog QPushButton:hover { background: #32333e; }
+QDialog, QInputDialog, QMessageBox { background: #1e1f26; color: #eeeeef; }
+QDialog QLabel, QInputDialog QLabel, QMessageBox QLabel { background: transparent; color: #eeeeef; }
+QDialog QPushButton, QInputDialog QPushButton, QMessageBox QPushButton { background: #25262d; color: #eeeeef; border: 1px solid #3a3b46; border-radius: 8px; padding: 6px 14px; font-size: 13px; min-height: 20px; min-width: 72px; }
+QDialog QPushButton:hover, QInputDialog QPushButton:hover, QMessageBox QPushButton:hover { background: #32333e; border-color: #4f5268; }
+QDialog QPushButton:disabled, QInputDialog QPushButton:disabled, QMessageBox QPushButton:disabled { background: #1a1b22; color: #6b6e80; border-color: #2b2c38; }
+QDialog QPushButton:default, QInputDialog QPushButton:default, QMessageBox QPushButton:default { background: #5850ec; border-color: #696cde; color: #ffffff; }
+QDialog QPushButton:default:hover, QInputDialog QPushButton:default:hover, QMessageBox QPushButton:default:hover { background: #6860f5; }
+QDialog#settingsDialog, QDialog#wemodDialog { background: #25262d; }
+QDialog#settingsDialog QPushButton, QDialog#wemodDialog QPushButton { background: #202127; border: 1px solid #3a3b46; border-radius: 8px; padding: 6px 14px; font-size: 13px; min-height: 20px; color: #eeeeef; }
+QDialog#settingsDialog QPushButton:hover, QDialog#wemodDialog QPushButton:hover { background: #32333e; }
+QDialog#settingsDialog QPushButton:disabled, QDialog#wemodDialog QPushButton:disabled { background: #1a1b22; color: #6b6e80; border-color: #2b2c38; }
 QDialog#settingsDialog QListWidget { background: #202127; border: 1px solid #3a3b46; border-radius: 8px; padding: 4px; }
-QDialog#settingsDialog QListWidget::item:selected { background: #3b3d59; }
+QDialog#settingsDialog QListWidget::item { padding: 5px 8px; border-radius: 4px; }
+QDialog#settingsDialog QListWidget::item:selected { background: #3b3d59; color: #ffffff; }
 QDialog#settingsDialog QPushButton#saveSettings { background: #696cde; border-color: #777ae7; color: white; }
 QDialog#settingsDialog QPushButton#saveSettings:hover { background: #777ae7; }
+QDialog#settingsDialog QPushButton#deleteHiddenBtn { background: rgba(239, 68, 68, 0.14); border-color: rgba(239, 68, 68, 0.38); color: #fca5a5; }
+QDialog#settingsDialog QPushButton#deleteHiddenBtn:hover { background: rgba(239, 68, 68, 0.28); color: #ffffff; }
+QPushButton#wemodInlineStartBtn { background: #2d335c; color: #e0e7ff; border: 1px solid #5850ec; border-radius: 6px; padding: 2px 10px; font-size: 12px; font-weight: 500; }
+QPushButton#wemodInlineStartBtn:hover { background: #5850ec; color: #ffffff; }
+QPushButton#wemodInlineStartBtn:disabled { background: #1e2030; color: #6b6e80; border-color: #2d2f3d; }
+QPushButton#wemodInlineStopBtn { background: rgba(34, 197, 94, 0.16); color: #6ee7b7; border: 1px solid rgba(52, 211, 153, 0.45); border-radius: 6px; padding: 2px 10px; font-size: 12px; font-weight: 500; }
+QPushButton#wemodInlineStopBtn:hover { background: rgba(239, 68, 68, 0.22); color: #fca5a5; border-color: rgba(248, 113, 113, 0.55); }
+QPushButton#wemodInlineStopBtn:disabled { background: #1e2030; color: #6b6e80; border-color: #2d2f3d; }
+QPushButton#toolbarBtn { background: #202127; color: #d4d4d8; border: 1px solid #3a3b46; border-radius: 7px; padding: 4px 10px; font-size: 12px; font-weight: 500; }
+QPushButton#toolbarBtn:hover { background: #2a2c38; color: #ffffff; border-color: #4f5268; }
+QPushButton#killProcBtn { background: rgba(239, 68, 68, 0.12); color: #fca5a5; border: 1px solid rgba(239, 68, 68, 0.35); border-radius: 9px; padding: 6px 12px; font-size: 13px; font-weight: 500; }
+QPushButton#killProcBtn:hover { background: rgba(239, 68, 68, 0.24); color: #ffffff; border-color: rgba(248, 113, 113, 0.6); }
+QPushButton#killProcBtn:disabled { background: #1b1c23; color: #6b6e80; border-color: #2b2c38; }
 """
 
 # Context Menu specific rules - placed after generic QWidget rules to prevent transparent override

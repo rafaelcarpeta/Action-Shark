@@ -477,12 +477,25 @@ def _is_portproton_prefix(wineprefix: str) -> bool:
            (pp_native_base in wineprefix and os.path.isdir(pp_native_base))
 
 
+def _canonical_prefix(wineprefix: str) -> str:
+    if not wineprefix:
+        return ''
+    clean = wineprefix.rstrip('/') or wineprefix
+    try:
+        return os.path.realpath(clean)
+    except OSError:
+        return os.path.abspath(clean)
+
+
 def _is_hydra_prefix(wineprefix: str) -> bool:
+    norm = (wineprefix or '').rstrip('/')
     bases = [
         os.path.expanduser('~/.config/hydralauncher/wine-prefixes'),
+        os.path.expanduser('~/.config/hydralauncher-native/wine-prefixes'),
         os.path.expanduser('~/.var/app/io.github.hydralauncher.hydra/config/hydralauncher/wine-prefixes'),
+        os.path.expanduser('~/.var/app/io.github.hydralauncher.hydra/config/hydralauncher-native/wine-prefixes'),
     ]
-    return any(wineprefix.startswith(b) and os.path.isdir(b) for b in bases)
+    return any(norm.startswith(b) and os.path.isdir(b) for b in bases)
 
 
 def _find_hydra_wine(wineprefix: str) -> Optional[str]:
@@ -1381,10 +1394,24 @@ def _kill_process_tree(ppid: int):
         time.sleep(0.01)
 
 
+def _env_matches_prefix(env_raw: bytes, wineprefix: str) -> bool:
+    target_norm = (wineprefix or '').rstrip('/')
+    target_real = _canonical_prefix(wineprefix)
+    for var in env_raw.split(b'\0'):
+        if var.startswith(b'WINEPREFIX='):
+            val = var[11:].decode('utf-8', errors='replace').rstrip('/')
+            if not val:
+                continue
+            if val == target_norm or _canonical_prefix(val) == target_real:
+                return True
+    return False
+
+
 def stop_wemod(wineprefix: str):
     """Para o WeMod rodando no prefixo.
     Mata apenas o WeMod.exe e seus filhos — NAO mata wineserver
     para evitar derrubar outros processos (ex.: jogo) no mesmo prefixo."""
+    wineprefix = (wineprefix or '').rstrip('/') or wineprefix
     pid = _get_wemod_pid(wineprefix)
     if pid:
         _log(f'Finalizando arvore WeMod a partir do PID {pid}...')
@@ -1394,7 +1421,6 @@ def stop_wemod(wineprefix: str):
 
     # Varre /proc por qualquer outro processo .exe que esteja no prefixo
     # e que pareça ser do WeMod (evita processos órfãos)
-    compat_data = os.path.dirname(wineprefix)
     for entry in os.listdir('/proc'):
         if not entry.isdigit():
             continue
@@ -1405,11 +1431,10 @@ def stop_wemod(wineprefix: str):
         if 'WeMod.exe' not in cmdline:
             continue
         try:
-            env_raw = Path(f'/proc/{entry}/environ').read_bytes().decode('utf-8', errors='replace')
+            env_raw = Path(f'/proc/{entry}/environ').read_bytes()
         except (OSError, PermissionError):
             continue
-        # Match exato: WINEPREFIX= seguido do path
-        if f'WINEPREFIX={wineprefix}\0' in env_raw:
+        if _env_matches_prefix(env_raw, wineprefix):
             try:
                 os.kill(int(entry), 9)
                 _log(f'Processo orfao WeMod PID {entry} finalizado')
@@ -1420,17 +1445,19 @@ def stop_wemod(wineprefix: str):
 # ── status ───────────────────────────────────────────────────────────
 
 def is_wemod_installed(wineprefix: str) -> bool:
-    return os.path.isfile(os.path.join(wineprefix, WEMOD_MARKER))
+    if not wineprefix:
+        return False
+    return os.path.isfile(os.path.join(wineprefix.rstrip('/') or wineprefix, WEMOD_MARKER))
 
 
 def _get_wemod_pid(wineprefix: str) -> Optional[int]:
     """Procura processo WeMod.exe rodando neste prefixo.
 
-    Match exato: cmdline contem 'WeMod.exe' e environ contem
-    'WINEPREFIX=<wineprefix>\0' (delimitador null do /proc/environ).
+    Match exato/canônico em WINEPREFIX do /proc/environ.
     Pula processos zumbi (estado Z) — wine pode virar zumbi apos
     o WeMod.exe Windows ter fechado."""
-    wineprefix_bytes = f'WINEPREFIX={wineprefix}\0'.encode('utf-8')
+    if not wineprefix:
+        return None
     for entry in os.listdir('/proc'):
         if not entry.isdigit():
             continue
@@ -1451,13 +1478,45 @@ def _get_wemod_pid(wineprefix: str) -> Optional[int]:
             env_raw = Path(f'/proc/{entry}/environ').read_bytes()
         except (OSError, PermissionError):
             return int(entry)
-        if wineprefix_bytes in env_raw:
+        if _env_matches_prefix(env_raw, wineprefix):
             return int(entry)
     return None
 
 
 def is_wemod_running(wineprefix: str) -> bool:
     return _get_wemod_pid(wineprefix) is not None
+
+
+def get_running_wemod_prefixes() -> set[str]:
+    """Retorna um conjunto de WINEPREFIX (norm e canonico) com WeMod.exe em execucao."""
+    running = set()
+    for entry in os.listdir('/proc'):
+        if not entry.isdigit():
+            continue
+        try:
+            cmdline = Path(f'/proc/{entry}/cmdline').read_bytes().decode('utf-8', errors='replace')
+        except (OSError, PermissionError):
+            continue
+        if 'WeMod.exe' not in cmdline:
+            continue
+        try:
+            status = Path(f'/proc/{entry}/status').read_text()
+            if re.search(r'^State:\s*Z', status, re.M):
+                continue
+        except (OSError, PermissionError):
+            continue
+        try:
+            env_raw = Path(f'/proc/{entry}/environ').read_bytes()
+        except (OSError, PermissionError):
+            continue
+        for var in env_raw.split(b'\0'):
+            if var.startswith(b'WINEPREFIX='):
+                val = var[11:].decode('utf-8', errors='replace').rstrip('/')
+                if val:
+                    running.add(val)
+                    running.add(_canonical_prefix(val))
+                break
+    return running
 
 
 def get_status(wineprefix: str) -> str:

@@ -8,12 +8,17 @@ import json
 import os
 import re
 import shutil
+import sqlite3
+import struct
 import subprocess
 import sys
+import threading
 import time
 import tempfile
 import traceback
 import zipfile
+import zlib
+from pathlib import Path
 from pathlib import Path
 from collections import deque
 
@@ -41,7 +46,7 @@ from PyQt6.QtWidgets import (
     QFrame,
     QStackedWidget,
 )
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QSignalBlocker
 from PyQt6.QtGui import QIcon
 
 import error_logger
@@ -62,8 +67,6 @@ from ui_components import (
     get_log_icon,
     get_gear_icon,
     get_refresh_icon,
-    get_filter_icon,
-    get_back_icon,
     get_minimize_icon,
     get_maximize_icon,
     get_close_icon,
@@ -170,34 +173,73 @@ def _resolve_prefix_root(pfx: str) -> str:
 # ── Steam games (via protontricks) ─────────────────────────────────
 
 def get_steam_games():
+    games = []
+    seen_appids = set()
     try:
         r = subprocess.run(
             ['protontricks', '-l'],
             capture_output=True, text=True, timeout=15,
         )
+        if r.returncode == 0:
+            for line in r.stdout.strip().splitlines():
+                line = line.strip()
+                if '(' in line and line.endswith(')'):
+                    name = line[:line.rfind('(')].strip()
+                    appid = line[line.rfind('(') + 1:-1].strip()
+                    if appid.isdigit() and appid not in seen_appids:
+                        seen_appids.add(appid)
+                        games.append({
+                            'name': name,
+                            'appid': appid,
+                            'wineprefix': _find_steam_prefix(appid),
+                            'source': 'Steam',
+                            'pid': None,
+                        })
     except (FileNotFoundError, subprocess.TimeoutExpired):
-        return []
-    if r.returncode != 0:
-        return []
+        pass
 
-    games = []
-    for line in r.stdout.strip().splitlines():
-        line = line.strip()
-        if '(' in line and line.endswith(')'):
-            name = line[:line.rfind('(')].strip()
-            appid = line[line.rfind('(') + 1:-1].strip()
-            if appid.isdigit():
-                games.append({
-                    'name': name,
-                    'appid': appid,
-                    'wineprefix': _find_steam_prefix(appid),
-                    'source': 'Steam',
-                    'pid': None,
-                })
+    # Fallback / complemento via appmanifest_*.acf para jogos Steam com prefixo válido
+    for lib in _steam_libraries():
+        steamapps = os.path.join(lib, 'steamapps')
+        if not os.path.isdir(steamapps):
+            continue
+        for fname in os.listdir(steamapps):
+            if not (fname.startswith('appmanifest_') and fname.endswith('.acf')):
+                continue
+            appid = fname[len('appmanifest_'):-len('.acf')]
+            if not appid.isdigit() or appid in seen_appids:
+                continue
+            pfx = os.path.join(steamapps, 'compatdata', appid, 'pfx')
+            if not os.path.isdir(os.path.join(pfx, 'drive_c')):
+                continue
+            acf_raw = _read_file_safe(os.path.join(steamapps, fname))
+            m = re.search(r'"name"\s+"([^"\n]+)"', acf_raw)
+            name = m.group(1).strip() if m else f"Steam App {appid}"
+            if any(skip in name.lower() for skip in ('proton', 'steamworks common', 'steam linux runtime')):
+                continue
+            seen_appids.add(appid)
+            games.append({
+                'name': name,
+                'appid': appid,
+                'wineprefix': pfx,
+                'source': 'Steam',
+                'pid': None,
+            })
     return games
 
 
 # ── running Wine/Proton processes ──────────────────────────────────
+
+def _canonical_prefix_path(wineprefix: str) -> str:
+    """Normaliza WINEPREFIX resolvendo barra final e symlinks (ex.: pfx -> .)."""
+    if not wineprefix:
+        return ''
+    clean = wineprefix.rstrip('/') or wineprefix
+    try:
+        return os.path.realpath(clean)
+    except OSError:
+        return os.path.abspath(clean)
+
 
 def _normalize_wineprefix(wineprefix):
     """Remove trailing slashes so the same prefix compares equal everywhere.
@@ -324,7 +366,7 @@ def get_running_wine_entries():
         if m:
             appid = m.group(1)
         elif wineprefix:
-            m_hydra = re.search(r'hydralauncher/wine-prefixes/(\d+)', wineprefix)
+            m_hydra = re.search(r'hydralauncher(?:-native)?/wine-prefixes/(\d+)', wineprefix)
             if m_hydra:
                 appid = m_hydra.group(1)
 
@@ -356,40 +398,214 @@ def get_running_wine_entries():
 
 # ── launcher-config prefix detection ───────────────────────────────
 
+def _parse_shortcuts_vdf(vdf_path: str) -> list[dict]:
+    """Parseia Steam userdata/*/config/shortcuts.vdf (formato VDF binário)."""
+    raw = _read_file_safe(vdf_path, 'rb')
+    if not raw:
+        return []
+    pos = 0
+    n = len(raw)
+
+    def _read_cstr() -> str:
+        nonlocal pos
+        end = raw.find(b'\x00', pos)
+        if end == -1:
+            pos = n
+            return ''
+        val = raw[pos:end].decode('utf-8', errors='replace')
+        pos = end + 1
+        return val
+
+    def _read_dict() -> dict:
+        nonlocal pos
+        obj = {}
+        while pos < n:
+            tcode = raw[pos]
+            pos += 1
+            if tcode == 0x08:  # end of map
+                break
+            key = _read_cstr()
+            if tcode == 0x00:
+                obj[key] = _read_dict()
+            elif tcode == 0x01:
+                obj[key] = _read_cstr()
+            elif tcode == 0x02:
+                if pos + 4 <= n:
+                    obj[key] = struct.unpack_from('<i', raw, pos)[0]
+                    pos += 4
+                else:
+                    pos = n
+            elif tcode == 0x03:
+                pos = min(n, pos + 4)
+            elif tcode == 0x07:
+                pos = min(n, pos + 8)
+            else:
+                break
+        return obj
+
+    root = _read_dict()
+    shortcuts = root.get('shortcuts') if isinstance(root.get('shortcuts'), dict) else root
+    entries = []
+    if not isinstance(shortcuts, dict):
+        return entries
+    for val in shortcuts.values():
+        if not isinstance(val, dict):
+            continue
+        norm = {str(k).lower(): v for k, v in val.items()}
+        appname = str(norm.get('appname') or '').strip()
+        exe = str(norm.get('exe') or '').strip().strip('"')
+        raw_id = norm.get('appid')
+        if isinstance(raw_id, int):
+            appid = str(raw_id & 0xFFFFFFFF)
+        elif appname and exe:
+            crc = zlib.crc32((exe + appname).encode('utf-8')) | 0x80000000
+            appid = str(crc & 0xFFFFFFFF)
+        else:
+            continue
+        if appname:
+            entries.append({'name': appname, 'appid': appid, 'exe': exe})
+    return entries
+
+
+def _detect_steam_non_steam():
+    """Detecta jogos Não-Steam adicionados ao Steam (shortcuts.vdf + compatdata)."""
+    out = []
+    seen_pfx = set()
+    steam_roots = [
+        os.path.expanduser('~/.local/share/Steam'),
+        os.path.expanduser('~/.steam/steam'),
+        os.path.expanduser('~/.steam/root'),
+    ]
+    for root in steam_roots:
+        userdata = os.path.join(root, 'userdata')
+        if not os.path.isdir(userdata):
+            continue
+        for uid in os.listdir(userdata):
+            vdf_path = os.path.join(userdata, uid, 'config', 'shortcuts.vdf')
+            if not os.path.isfile(vdf_path):
+                continue
+            for sc in _parse_shortcuts_vdf(vdf_path):
+                pfx = _find_steam_prefix(sc['appid'])
+                if not pfx or not os.path.isdir(os.path.join(pfx, 'drive_c')):
+                    continue
+                canon = _canonical_prefix_path(pfx)
+                if canon in seen_pfx:
+                    continue
+                seen_pfx.add(canon)
+                out.append({
+                    'name': sc['name'],
+                    'appid': sc['appid'],
+                    'wineprefix': pfx,
+                    'source': 'Non-Steam',
+                    'exe': sc['exe'],
+                })
+    return out
+
+
 def _detect_lutris():
     out = []
+    seen = set()
     cfg_dir = os.path.expanduser('~/.config/lutris/games/')
-    if not os.path.isdir(cfg_dir):
-        return out
-    for fname in os.listdir(cfg_dir):
-        if not fname.endswith('.json'):
-            continue
+    if os.path.isdir(cfg_dir):
+        for fname in os.listdir(cfg_dir):
+            fpath = os.path.join(cfg_dir, fname)
+            if fname.endswith('.json'):
+                try:
+                    data = json.loads(Path(fpath).read_text())
+                except (OSError, json.JSONDecodeError):
+                    continue
+                pfx = data.get('wine_prefix') or ''
+                if pfx and os.path.isdir(os.path.join(pfx, 'drive_c')):
+                    canon = _canonical_prefix_path(pfx)
+                    if canon not in seen:
+                        seen.add(canon)
+                        out.append({
+                            'name': f"Lutris: {data.get('name', fname[:-5])}",
+                            'wineprefix': pfx,
+                            'source': 'Lutris',
+                            'exe': data.get('exe', ''),
+                        })
+            elif fname.endswith(('.yml', '.yaml')):
+                raw = _read_file_safe(fpath)
+                if not raw:
+                    continue
+                pfx = ''
+                exe = ''
+                gname = fname.rsplit('.', 1)[0]
+                section = ''
+                for line in raw.splitlines():
+                    stripped = line.strip()
+                    if not stripped or stripped.startswith('#'):
+                        continue
+                    indent = len(line) - len(line.lstrip())
+                    if indent == 0 and ':' in stripped:
+                        k, v = stripped.split(':', 1)
+                        section = k.strip()
+                        v = v.strip().strip("'\"")
+                        if section == 'name' and v:
+                            gname = v
+                    elif indent > 0 and ':' in stripped:
+                        k, v = stripped.split(':', 1)
+                        k = k.strip()
+                        v = v.strip().strip("'\"")
+                        if section == 'wine' and k == 'prefix' and v:
+                            pfx = os.path.expanduser(v)
+                        elif section == 'game' and k == 'exe' and v:
+                            exe = os.path.expanduser(v)
+                if pfx and os.path.isdir(os.path.join(pfx, 'drive_c')):
+                    canon = _canonical_prefix_path(pfx)
+                    if canon not in seen:
+                        seen.add(canon)
+                        out.append({
+                            'name': f"Lutris: {gname}",
+                            'wineprefix': pfx,
+                            'source': 'Lutris',
+                            'exe': exe,
+                        })
+
+    pga_db = os.path.expanduser('~/.local/share/lutris/pga.db')
+    if os.path.isfile(pga_db):
         try:
-            data = json.loads(Path(os.path.join(cfg_dir, fname)).read_text())
-        except (OSError, json.JSONDecodeError):
-            continue
-        pfx = data.get('wine_prefix') or ''
-        if pfx and os.path.isdir(pfx):
-            out.append({
-                'name': f"Lutris: {data.get('name', fname)}",
-                'wineprefix': pfx,
-                'source': 'Lutris',
-                'exe': data.get('exe', ''),
-            })
+            conn = sqlite3.connect(f'file:{pga_db}?mode=ro', uri=True)
+            cur = conn.cursor()
+            cur.execute("SELECT name, directory FROM games WHERE directory IS NOT NULL AND directory != ''")
+            for gname, directory in cur.fetchall():
+                pfx = os.path.expanduser(str(directory))
+                if pfx and os.path.isdir(os.path.join(pfx, 'drive_c')):
+                    canon = _canonical_prefix_path(pfx)
+                    if canon not in seen:
+                        seen.add(canon)
+                        out.append({
+                            'name': f"Lutris: {gname or os.path.basename(pfx)}",
+                            'wineprefix': pfx,
+                            'source': 'Lutris',
+                            'exe': '',
+                        })
+            conn.close()
+        except Exception:
+            pass
     return out
 
 
 def _detect_bottles():
     out = []
-    for base in [
+    seen = set()
+    bases = [
+        os.path.expanduser('~/.var/app/com.usebottles.bottles/data/bottles/bottles/'),
         os.path.expanduser('~/.var/app/com.usebottles.bottles/data/bottles/'),
+        os.path.expanduser('~/.local/share/bottles/bottles/'),
         os.path.expanduser('~/.local/share/bottles/'),
-    ]:
+    ]
+    for base in bases:
         if not os.path.isdir(base):
             continue
         for bottle in os.listdir(base):
             pfx = os.path.join(base, bottle)
-            if os.path.isdir(os.path.join(pfx, 'drive_dos')):
+            if os.path.isdir(os.path.join(pfx, 'drive_c')):
+                canon = _canonical_prefix_path(pfx)
+                if canon in seen:
+                    continue
+                seen.add(canon)
                 out.append({
                     'name': f"Bottles: {bottle}",
                     'wineprefix': pfx,
@@ -401,6 +617,20 @@ def _detect_bottles():
 
 def _detect_heroic():
     out = []
+    seen = set()
+
+    def _add_heroic(title, pfx, exe=''):
+        if pfx and os.path.isdir(os.path.join(pfx, 'drive_c')):
+            canon = _canonical_prefix_path(pfx)
+            if canon not in seen:
+                seen.add(canon)
+                out.append({
+                    'name': f"Heroic: {title}",
+                    'wineprefix': pfx,
+                    'source': 'Heroic',
+                    'exe': exe,
+                })
+
     for cfg_dir in [
         os.path.expanduser('~/.config/heroic/'),
         os.path.expanduser('~/.var/app/com.heroicgameslauncher.hgl/config/heroic/'),
@@ -418,13 +648,7 @@ def _detect_heroic():
                 if not isinstance(game_data, dict):
                     continue
                 pfx = game_data.get('winePrefix') or game_data.get('wine_prefix', '')
-                if pfx and os.path.isdir(pfx):
-                    out.append({
-                        'name': f"Heroic: {game_data.get('title', game_id)}",
-                        'wineprefix': pfx,
-                        'source': 'Heroic',
-                        'exe': game_data.get('executable', ''),
-                    })
+                _add_heroic(game_data.get('title', game_id), pfx, game_data.get('executable', ''))
 
         gc_dir = os.path.join(cfg_dir, 'GamesConfig')
         if os.path.isdir(gc_dir):
@@ -435,14 +659,25 @@ def _detect_heroic():
                     gc = json.loads(Path(os.path.join(gc_dir, fname)).read_text())
                 except (OSError, json.JSONDecodeError):
                     continue
+                if not isinstance(gc, dict):
+                    continue
                 pfx = gc.get('winePrefix') or gc.get('wine_prefix', '')
-                if pfx and os.path.isdir(pfx):
-                    out.append({
-                        'name': f"Heroic: {gc.get('title', fname[:-5])}",
-                        'wineprefix': pfx,
-                        'source': 'Heroic',
-                        'exe': gc.get('executable', ''),
-                    })
+                if pfx:
+                    _add_heroic(gc.get('title', fname[:-5]), pfx, gc.get('executable', ''))
+                for sub_key, sub_val in gc.items():
+                    if isinstance(sub_val, dict):
+                        spfx = sub_val.get('winePrefix') or sub_val.get('wine_prefix', '')
+                        _add_heroic(sub_val.get('title', sub_key or fname[:-5]), spfx, sub_val.get('executable', ''))
+
+    for pfx_root in [
+        os.path.expanduser('~/Games/Heroic/Prefixes/default'),
+        os.path.expanduser('~/Games/Heroic/Prefixes'),
+    ]:
+        if not os.path.isdir(pfx_root):
+            continue
+        for item in os.listdir(pfx_root):
+            pfx = os.path.join(pfx_root, item)
+            _add_heroic(item, pfx)
     return out
 
 
@@ -526,203 +761,301 @@ def _resolve_steam_title(appid: str) -> str:
     return ''
 
 
-def _get_hydra_games_metadata():
+_HYDRA_META_CACHE: dict[tuple, dict] = {}
+
+
+def _get_hydra_games_metadata(target_ids=None):
     """Extract game metadata (title, executablePath) from Hydra database and logs."""
     import glob
-    games = {}
     hydra_dirs = [
         os.path.expanduser('~/.config/hydralauncher'),
+        os.path.expanduser('~/.config/hydralauncher-native'),
         os.path.expanduser('~/.var/app/io.github.hydralauncher.hydra/config/hydralauncher'),
+        os.path.expanduser('~/.var/app/io.github.hydralauncher.hydra/config/hydralauncher-native'),
     ]
 
+    if target_ids is not None and len(target_ids) == 0:
+        return {}
+
+    target_set = {str(t_id) for t_id in target_ids} if target_ids is not None else None
+    target_bytes = [t_id.encode('utf-8') for t_id in target_set] if target_set else []
+
+    sig_parts = []
+    db_files = []
+    log_dirs = []
     for h_dir in hydra_dirs:
         db_dir = os.path.join(h_dir, 'hydra-db')
         if os.path.isdir(db_dir):
-            for fpath in glob.glob(os.path.join(db_dir, '*')):
+            for fpath in sorted(glob.glob(os.path.join(db_dir, '*'))):
                 if not fpath.endswith(('.log', '.ldb')):
                     continue
                 try:
-                    data = Path(fpath).read_bytes()
+                    st = os.stat(fpath)
+                    sig_parts.append((fpath, st.st_mtime_ns, st.st_size))
+                    db_files.append(fpath)
                 except OSError:
                     continue
-
-                # 1. Parse structured JSON payloads following !games! and !gameShopAssets!
-                idx = 0
-                while True:
-                    p_games = data.find(b'!games!', idx)
-                    p_shop = data.find(b'!gameShopAssets!', idx)
-                    candidates = [p for p in (p_games, p_shop) if p != -1]
-                    if not candidates:
-                        break
-                    p_next = min(candidates)
-                    idx = p_next + 7
-
-                    brace_start = data.find(b'{', p_next)
-                    if brace_start != -1 and brace_start - p_next < 120:
-                        depth = 0
-                        in_string = False
-                        escape = False
-                        for i in range(brace_start, min(len(data), brace_start + 10000)):
-                            b = data[i:i+1]
-                            if escape:
-                                escape = False
-                                continue
-                            if b == b'\\':
-                                escape = True
-                                continue
-                            if b == b'"':
-                                in_string = not in_string
-                                continue
-                            if not in_string:
-                                if b == b'{':
-                                    depth += 1
-                                elif b == b'}':
-                                    depth -= 1
-                                    if depth == 0:
-                                        raw = data[brace_start:i+1].decode('utf-8', errors='ignore')
-                                        try:
-                                            obj = json.loads(raw)
-                                            oid = str(obj.get('objectId') or obj.get('id') or '')
-                                            title = obj.get('title')
-                                            exe = obj.get('executablePath') or ''
-                                            if oid and title:
-                                                if oid not in games:
-                                                    games[oid] = {'title': title, 'exe': exe}
-                                                else:
-                                                    if title:
-                                                        games[oid]['title'] = title
-                                                    if exe and (not games[oid]['exe'] or os.path.isfile(exe)):
-                                                        games[oid]['exe'] = exe
-                                        except Exception:
-                                            pass
-                                        break
-
-                # 2. Regex fallback for string pairs across binary LevelDB blocks
-                p1 = re.compile(rb'"objectId":"(\d+)"[^}{]{1,800}"title":"((?:[^"\\]|\\.)*)"')
-                p2 = re.compile(rb'"title":"((?:[^"\\]|\\.)*)"[^}{]{1,800}"objectId":"(\d+)"')
-                for m in p1.finditer(data):
-                    oid = m.group(1).decode('utf-8', errors='ignore')
-                    t = m.group(2).decode('utf-8', errors='ignore')
-                    try:
-                        t = json.loads(f'"{t}"')
-                    except Exception:
-                        pass
-                    if oid not in games or not games[oid].get('title'):
-                        games[oid] = {'title': t, 'exe': ''}
-                for m in p2.finditer(data):
-                    t = m.group(1).decode('utf-8', errors='ignore')
-                    oid = m.group(2).decode('utf-8', errors='ignore')
-                    try:
-                        t = json.loads(f'"{t}"')
-                    except Exception:
-                        pass
-                    if oid not in games or not games[oid].get('title'):
-                        games[oid] = {'title': t, 'exe': ''}
-
-        # 3. Check logs directory for achievements notifications and umu executable commands
         logs_dir = os.path.join(h_dir, 'logs')
         if os.path.isdir(logs_dir):
+            log_dirs.append(logs_dir)
             ach_path = os.path.join(logs_dir, 'achievements.txt')
             if os.path.isfile(ach_path):
                 try:
-                    with open(ach_path, 'r', encoding='utf-8', errors='ignore') as fp:
-                        for line in fp:
-                            if 'Publishing achievement notification' in line:
-                                parts = line.strip().split('Publishing achievement notification', 1)
-                                if len(parts) == 2:
-                                    sub = parts[1].strip().split(' ', 1)
-                                    if len(sub) == 2 and sub[0].isdigit():
-                                        aid, tname = sub[0], sub[1].strip()
-                                        if aid not in games:
-                                            games[aid] = {'title': tname, 'exe': ''}
+                    st = os.stat(ach_path)
+                    sig_parts.append((ach_path, st.st_mtime_ns, st.st_size))
                 except OSError:
                     pass
 
-            for oid, info in games.items():
-                if not info.get('exe') or not os.path.isfile(info['exe']):
-                    umu_log = os.path.join(logs_dir, f'umu-{oid}.log')
-                    if os.path.isfile(umu_log):
-                        try:
-                            with open(umu_log, 'r', encoding='utf-8', errors='ignore') as fp:
-                                for line in fp:
-                                    if 'Command:' in line and '.exe' in line:
-                                        m = re.findall(r"['\"]([^'\"]+\.exe)['\"]", line)
-                                        if m and os.path.isfile(m[-1]):
-                                            info['exe'] = m[-1]
-                        except OSError:
-                            pass
+    cache_key = (tuple(sig_parts), frozenset(target_set) if target_set is not None else None)
+    if cache_key in _HYDRA_META_CACHE:
+        return _HYDRA_META_CACHE[cache_key]
 
+    games = {}
+
+    for fpath in db_files:
+        try:
+            data = Path(fpath).read_bytes()
+        except OSError:
+            continue
+
+        # Fast skip when searching specific installed Hydra IDs
+        if target_bytes and not any(tb in data for tb in target_bytes):
+            continue
+
+        # 1. Parse structured JSON payloads following !games! and !gameShopAssets!
+        idx = 0
+        while True:
+            p_games = data.find(b'!games!', idx)
+            p_shop = data.find(b'!gameShopAssets!', idx)
+            candidates = [p for p in (p_games, p_shop) if p != -1]
+            if not candidates:
+                break
+            p_next = min(candidates)
+            idx = p_next + 7
+
+            brace_start = data.find(b'{', p_next)
+            if brace_start != -1 and brace_start - p_next < 120:
+                window = data[brace_start:brace_start + 10000]
+                if target_bytes and not any(tb in window for tb in target_bytes):
+                    continue
+                depth = 0
+                in_string = False
+                escape = False
+                for i in range(len(window)):
+                    b = window[i:i+1]
+                    if escape:
+                        escape = False
+                        continue
+                    if b == b'\\':
+                        escape = True
+                        continue
+                    if b == b'"':
+                        in_string = not in_string
+                        continue
+                    if not in_string:
+                        if b == b'{':
+                            depth += 1
+                        elif b == b'}':
+                            depth -= 1
+                            if depth == 0:
+                                raw = window[:i+1].decode('utf-8', errors='ignore')
+                                try:
+                                    obj = json.loads(raw)
+                                    oid = str(obj.get('objectId') or obj.get('id') or '')
+                                    title = obj.get('title')
+                                    exe = obj.get('executablePath') or ''
+                                    if oid and title and (target_set is None or oid in target_set):
+                                        if oid not in games:
+                                            games[oid] = {'title': title, 'exe': exe}
+                                        else:
+                                            if title:
+                                                games[oid]['title'] = title
+                                            if exe and (not games[oid]['exe'] or os.path.isfile(exe)):
+                                                games[oid]['exe'] = exe
+                                except Exception:
+                                    pass
+                                break
+
+        # 2. Targeted regex fallback for string pairs across binary LevelDB blocks
+        if target_set is not None:
+            for tid in target_set:
+                if tid in games and games[tid].get('title'):
+                    continue
+                tid_b = re.escape(tid.encode('utf-8'))
+                m1 = re.search(rb'"objectId":"' + tid_b + rb'"[^}{]{1,800}"title":"((?:[^"\\]|\\.)*)"', data)
+                m2 = None if m1 else re.search(rb'"title":"((?:[^"\\]|\\.)*)"[^}{]{1,800}"objectId":"' + tid_b + rb'"', data)
+                m = m1 or m2
+                if m:
+                    t_raw = m.group(1).decode('utf-8', errors='ignore')
+                    try:
+                        t_raw = json.loads(f'"{t_raw}"')
+                    except Exception:
+                        pass
+                    games[tid] = {'title': t_raw, 'exe': games.get(tid, {}).get('exe', '')}
+        else:
+            p1 = re.compile(rb'"objectId":"(\d+)"[^}{]{1,800}"title":"((?:[^"\\]|\\.)*)"')
+            p2 = re.compile(rb'"title":"((?:[^"\\]|\\.)*)"[^}{]{1,800}"objectId":"(\d+)"')
+            for m in p1.finditer(data):
+                oid = m.group(1).decode('utf-8', errors='ignore')
+                t_raw = m.group(2).decode('utf-8', errors='ignore')
+                try:
+                    t_raw = json.loads(f'"{t_raw}"')
+                except Exception:
+                    pass
+                if oid not in games or not games[oid].get('title'):
+                    games[oid] = {'title': t_raw, 'exe': ''}
+            for m in p2.finditer(data):
+                t_raw = m.group(1).decode('utf-8', errors='ignore')
+                oid = m.group(2).decode('utf-8', errors='ignore')
+                try:
+                    t_raw = json.loads(f'"{t_raw}"')
+                except Exception:
+                    pass
+                if oid not in games or not games[oid].get('title'):
+                    games[oid] = {'title': t_raw, 'exe': ''}
+
+    # 3. Check logs directory for achievements notifications and umu executable commands
+    for logs_dir in log_dirs:
+        ach_path = os.path.join(logs_dir, 'achievements.txt')
+        if os.path.isfile(ach_path):
+            try:
+                with open(ach_path, 'r', encoding='utf-8', errors='ignore') as fp:
+                    for line in fp:
+                        if 'Publishing achievement notification' in line:
+                            parts = line.strip().split('Publishing achievement notification', 1)
+                            if len(parts) == 2:
+                                sub = parts[1].strip().split(' ', 1)
+                                if len(sub) == 2 and sub[0].isdigit():
+                                    aid, tname = sub[0], sub[1].strip()
+                                    if (target_set is None or aid in target_set) and aid not in games:
+                                        games[aid] = {'title': tname, 'exe': ''}
+            except OSError:
+                pass
+
+        for oid, info in games.items():
+            if not info.get('exe') or not os.path.isfile(info['exe']):
+                umu_log = os.path.join(logs_dir, f'umu-{oid}.log')
+                if os.path.isfile(umu_log):
+                    try:
+                        with open(umu_log, 'r', encoding='utf-8', errors='ignore') as fp:
+                            for line in fp:
+                                if 'Command:' in line and '.exe' in line:
+                                    m = re.findall(r"['\"]([^'\"]+\.exe)['\"]", line)
+                                    if m and os.path.isfile(m[-1]):
+                                        info['exe'] = m[-1]
+                    except OSError:
+                        pass
+
+    if len(_HYDRA_META_CACHE) > 8:
+        _HYDRA_META_CACHE.clear()
+    _HYDRA_META_CACHE[cache_key] = games
     return games
 
 
 def _detect_hydra():
     out = []
-    meta = _get_hydra_games_metadata()
     bases = [
         os.path.expanduser('~/.config/hydralauncher/wine-prefixes'),
+        os.path.expanduser('~/.config/hydralauncher-native/wine-prefixes'),
         os.path.expanduser('~/.var/app/io.github.hydralauncher.hydra/config/hydralauncher/wine-prefixes'),
+        os.path.expanduser('~/.var/app/io.github.hydralauncher.hydra/config/hydralauncher-native/wine-prefixes'),
     ]
+    found_entries = []
     seen_prefixes = set()
     for base in bases:
         if not os.path.isdir(base):
             continue
         for entry in sorted(os.listdir(base)):
-            pfx = os.path.join(base, entry)
+            pfx = _canonical_prefix_path(os.path.join(base, entry))
             if not os.path.isdir(os.path.join(pfx, 'drive_c')):
                 continue
             if pfx in seen_prefixes:
                 continue
             seen_prefixes.add(pfx)
+            found_entries.append((entry, pfx))
 
-            game_info = meta.get(entry, {})
-            title = game_info.get('title')
-            if not title and entry.isdigit():
-                title = _resolve_steam_title(entry)
-            display_title = title if title else entry
-            exe = game_info.get('exe', '')
+    if not found_entries:
+        return out
 
-            out.append({
-                'name': f"Hydra: {display_title}",
-                'wineprefix': pfx,
-                'source': 'Hydra',
-                'exe': exe,
-                'appid': entry if entry.isdigit() else None,
-            })
+    meta = _get_hydra_games_metadata(target_ids={entry for entry, _ in found_entries})
+    for entry, pfx in found_entries:
+        game_info = meta.get(entry, {})
+        title = game_info.get('title')
+        if not title and entry.isdigit():
+            title = _resolve_steam_title(entry)
+        display_title = title if title else entry
+        exe = game_info.get('exe', '')
+
+        out.append({
+            'name': f"Hydra: {display_title}",
+            'wineprefix': pfx,
+            'source': 'Hydra',
+            'exe': exe,
+            'appid': entry if entry.isdigit() else None,
+        })
     return out
 
 
-def _detect_custom():
+def _detect_default_wine():
     out = []
     default = os.path.expanduser('~/.wine')
     if os.path.isdir(os.path.join(default, 'drive_c')):
         out.append({
             'name': 'Default Wine (~/.wine)',
-            'wineprefix': default,
-            'source': 'Custom',
+            'wineprefix': _canonical_prefix_path(default),
+            'source': 'Default Wine',
             'exe': '',
         })
+    return out
+
+
+def _detect_custom():
+    out = []
+    seen = set()
+    no_steam_base = os.path.expanduser('~/Games/NoSteamGames')
+    if os.path.isdir(no_steam_base):
+        for item in os.listdir(no_steam_base):
+            pfx = os.path.join(no_steam_base, item)
+            if os.path.isdir(os.path.join(pfx, 'drive_c')):
+                canon = _canonical_prefix_path(pfx)
+                if canon not in seen:
+                    seen.add(canon)
+                    out.append({
+                        'name': item,
+                        'wineprefix': canon,
+                        'source': 'Non-Steam',
+                        'exe': '',
+                    })
+
     for base in [os.path.expanduser('~/Games'), os.path.expanduser('~/wineprefixes')]:
         if not os.path.isdir(base):
             continue
         for item in os.listdir(base):
+            if item in ('SteamLibrary', 'Heroic', 'NoSteamGames') or item.startswith('.'):
+                continue
             pfx = os.path.join(base, item)
             if os.path.isdir(os.path.join(pfx, 'drive_c')):
-                out.append({
-                    'name': item,
-                    'wineprefix': pfx,
-                    'source': 'Custom',
-                    'exe': '',
-                })
+                canon = _canonical_prefix_path(pfx)
+                if canon not in seen:
+                    seen.add(canon)
+                    out.append({
+                        'name': item,
+                        'wineprefix': canon,
+                        'source': 'Custom',
+                        'exe': '',
+                    })
     return out
 
 
 _LAUNCHER_DETECTORS = [
+    _detect_steam_non_steam,
     _detect_lutris,
     _detect_bottles,
     _detect_heroic,
     _detect_portproton,
     _detect_playonlinux,
     _detect_hydra,
+    _detect_default_wine,
     _detect_custom,
 ]
 
@@ -756,10 +1089,12 @@ def get_all_entries():
     hidden = set(load_config().get('hidden_prefixes', []))
 
     def _add(entry):
-        key = f"{entry.get('source','')}:{entry.get('appid','')}:{entry.get('wineprefix','')}"
+        pfx = entry.get('wineprefix', '')
+        canon = _canonical_prefix_path(pfx)
+        key = canon if canon else f"{entry.get('source','')}:{entry.get('appid','')}"
         if key not in seen:
             seen.add(key)
-            if entry.get('source') != 'Não-Steam' and entry.get('wineprefix', '') in hidden:
+            if entry.get('source') not in ('Não-Steam', 'Non-Steam') and (pfx in hidden or canon in hidden):
                 return
             items.append(entry)
 
@@ -1246,6 +1581,7 @@ def _find_wine_bin_for_pid(pid):
 
 class ProtonRunner(QWidget):
     process_error_detected = pyqtSignal(str, str)
+    wemod_action_finished = pyqtSignal(str, bool, str)
 
     def __init__(self):
         super().__init__()
@@ -1265,6 +1601,15 @@ class ProtonRunner(QWidget):
         i18n.init_language(self.config.get('language', 'en'))
 
         self.process_error_detected.connect(self._handle_process_error)
+        self.wemod_action_finished.connect(self._on_wemod_inline_finished)
+
+        self._last_proc_signature = None
+        self._last_pref_signature = None
+        self._proc_initialized = False
+        self._pref_initialized = False
+        self._last_inspector_key = None
+        self._cached_pref_entries = []
+        self._known_prefixes_canon = set()
 
         # Thread queues for built prefix / backups
         self._built_msg_queue = deque()
@@ -1278,7 +1623,7 @@ class ProtonRunner(QWidget):
         self._build_ui()
         self.ensurePolished()
         self.search_bar.setFixedSize(516, 35)
-        for button in (self.ce_btn, self.wemod_btn, self.open_folder_btn, self.open_logs_btn):
+        for button in (self.ce_btn, self.wemod_btn):
             button.setFixedHeight(53)
         self._load_tree()
 
@@ -1304,6 +1649,8 @@ class ProtonRunner(QWidget):
         self.tab_proc_btn.style().polish(self.tab_proc_btn)
         self.tab_pref_btn.style().unpolish(self.tab_pref_btn)
         self.tab_pref_btn.style().polish(self.tab_pref_btn)
+        if hasattr(self, 'add_prefix_btn'):
+            self.add_prefix_btn.setVisible(index == 1)
         self._apply_filters()
         self._on_item_selected()
 
@@ -1312,10 +1659,10 @@ class ProtonRunner(QWidget):
         if not data:
             return
         pfx = data.get('wineprefix', '')
-        if column == 3 and pfx:
+        if column == 3 and pfx and not wm.is_wemod_installed(pfx):
             dlg = WeModDialog(pfx, data.get('name', 'Jogo'), self)
             dlg.exec()
-            self._load_tree()
+            self._load_tree(force=True)
 
     def _build_ui(self):
         main_layout = QVBoxLayout(self)
@@ -1356,28 +1703,20 @@ class ProtonRunner(QWidget):
 
         top_bar_layout.addStretch()
 
-        # Center: Search Bar (Pill) + Filter Icon
+        # Center: Search Bar (Pill)
         search_container = QHBoxLayout()
         search_container.setSpacing(12)
 
         self.search_bar = QLineEdit()
         self.search_bar.setObjectName("searchBar")
         self.search_bar.setPlaceholderText(t("search_placeholder"))
+        self.search_bar.setToolTip(t("tooltip_search_bar"))
         self.search_bar.setFixedWidth(516)
         self.search_bar.setFixedHeight(35)
         self.search_bar.addAction(get_search_icon(16), QLineEdit.ActionPosition.LeadingPosition)
         self.search_bar.setClearButtonEnabled(True)
         self.search_bar.textChanged.connect(self._apply_filters)
         search_container.addWidget(self.search_bar)
-
-        self.filter_menu_btn = QPushButton()
-        self.filter_menu_btn.setIcon(get_filter_icon(18))
-        self.filter_menu_btn.setObjectName("headerIconBtn")
-        self.filter_menu_btn.setFixedSize(28, 32)
-        self.filter_menu_btn.setToolTip(t("search_filter_tooltip"))
-        self.filter_menu_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.filter_menu_btn.clicked.connect(self._quick_menu)
-        search_container.addWidget(self.filter_menu_btn)
 
         top_bar_layout.addLayout(search_container)
 
@@ -1400,12 +1739,14 @@ class ProtonRunner(QWidget):
         self.tab_proc_btn = QPushButton(t("nav_active_processes", count=0))
         self.tab_proc_btn.setObjectName("navTabBtn")
         self.tab_proc_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.tab_proc_btn.setToolTip(t("tooltip_tab_proc"))
         self.tab_proc_btn.setProperty("selected", "true")
         self.tab_proc_btn.clicked.connect(lambda: self._switch_tab(0))
 
         self.tab_pref_btn = QPushButton(t("nav_installed_prefixes", count=0))
         self.tab_pref_btn.setObjectName("navTabBtn")
         self.tab_pref_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.tab_pref_btn.setToolTip(t("tooltip_tab_pref"))
         self.tab_pref_btn.setProperty("selected", "false")
         self.tab_pref_btn.clicked.connect(lambda: self._switch_tab(1))
 
@@ -1414,8 +1755,28 @@ class ProtonRunner(QWidget):
 
         nav_row = QHBoxLayout()
         nav_row.setContentsMargins(0, 0, 0, 8)
+        nav_row.setSpacing(8)
         nav_row.addWidget(tab_container)
         nav_row.addStretch()
+
+        self.add_prefix_btn = QPushButton(t("btn_add_prefix_toolbar"))
+        self.add_prefix_btn.setObjectName("toolbarBtn")
+        self.add_prefix_btn.setFixedHeight(30)
+        self.add_prefix_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.add_prefix_btn.setToolTip(t("tooltip_add_prefix"))
+        self.add_prefix_btn.clicked.connect(self._add_custom_prefix)
+        self.add_prefix_btn.setVisible(False)
+        nav_row.addWidget(self.add_prefix_btn)
+
+        self.refresh_btn = QPushButton()
+        self.refresh_btn.setObjectName("toolbarBtn")
+        self.refresh_btn.setIcon(get_refresh_icon(15))
+        self.refresh_btn.setFixedSize(30, 30)
+        self.refresh_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.refresh_btn.setToolTip(t("tooltip_refresh"))
+        self.refresh_btn.clicked.connect(self._refresh)
+        nav_row.addWidget(self.refresh_btn)
+
         left_layout.addLayout(nav_row)
 
         # ── Stacked View ─────────────────────────────────────────────
@@ -1452,6 +1813,26 @@ class ProtonRunner(QWidget):
         self.proc_tree.setColumnWidth(3, 110)
 
         proc_layout.addWidget(self.proc_tree)
+
+        self.proc_empty_frame = QFrame()
+        self.proc_empty_frame.setStyleSheet("background: #141418; border-radius: 8px; border: 1px solid rgba(255,255,255,0.04);")
+        empty_layout = QVBoxLayout(self.proc_empty_frame)
+        empty_layout.setContentsMargins(24, 24, 24, 24)
+        empty_layout.setSpacing(6)
+        empty_layout.addStretch()
+        self.proc_empty_title = QLabel(t("empty_proc_title"))
+        self.proc_empty_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.proc_empty_title.setStyleSheet("font-size: 15px; font-weight: 500; color: #d4d4d8; background: transparent; border: none;")
+        empty_layout.addWidget(self.proc_empty_title)
+        self.proc_empty_sub = QLabel(t("empty_proc_subtitle"))
+        self.proc_empty_sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.proc_empty_sub.setWordWrap(True)
+        self.proc_empty_sub.setStyleSheet("font-size: 12px; color: #8e90a0; background: transparent; border: none;")
+        empty_layout.addWidget(self.proc_empty_sub)
+        empty_layout.addStretch()
+        self.proc_empty_frame.setVisible(False)
+        proc_layout.addWidget(self.proc_empty_frame, stretch=1)
+
         self.view_stack.addWidget(proc_page)
 
         # Page 1: Prefixos Instalados
@@ -1510,15 +1891,6 @@ class ProtonRunner(QWidget):
         insp_top_widget = QWidget()
         insp_top_widget.setFixedHeight(62)
         insp_top_widget.setLayout(insp_top)
-
-        self.back_btn = QPushButton()
-        self.back_btn.setIcon(get_back_icon(18))
-        self.back_btn.setObjectName("windowIconBtn")
-        self.back_btn.setFixedSize(28, 32)
-        self.back_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.back_btn.setToolTip(t('tooltip_refresh'))
-        self.back_btn.clicked.connect(self._refresh)
-        insp_top.addWidget(self.back_btn)
 
         insp_top.addStretch()
 
@@ -1580,6 +1952,7 @@ class ProtonRunner(QWidget):
         self.copy_pfx_btn.setFixedHeight(22)
         self.copy_pfx_btn.setStyleSheet("font-size: 11px; padding: 2px 8px; background: #272834; border: 1px solid #3f4258; border-radius: 4px; color: #d1d5db;")
         self.copy_pfx_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.copy_pfx_btn.setToolTip(t("tooltip_copy_pfx"))
         self.copy_pfx_btn.clicked.connect(self._copy_prefix_path)
         pfx_header_row.addWidget(self.copy_pfx_btn)
 
@@ -1587,6 +1960,7 @@ class ProtonRunner(QWidget):
         self.open_pfx_quick_btn.setFixedHeight(22)
         self.open_pfx_quick_btn.setStyleSheet("font-size: 11px; padding: 2px 8px; background: transparent; border: 1px solid #3f4258; border-radius: 4px; color: #818cf8;")
         self.open_pfx_quick_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.open_pfx_quick_btn.setToolTip(t("tooltip_open_pfx"))
         self.open_pfx_quick_btn.clicked.connect(self._open_prefix_folder)
         pfx_header_row.addWidget(self.open_pfx_quick_btn)
         pfx_layout.addLayout(pfx_header_row)
@@ -1600,6 +1974,7 @@ class ProtonRunner(QWidget):
         self.add_to_lib_btn.setFixedHeight(26)
         self.add_to_lib_btn.setStyleSheet("font-size: 11px; font-weight: 600; background: rgba(99, 102, 241, 0.15); border: 1px solid rgba(99, 102, 241, 0.35); border-radius: 6px; color: #a5b4fc;")
         self.add_to_lib_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.add_to_lib_btn.setToolTip(t("tooltip_add_to_list"))
         self.add_to_lib_btn.clicked.connect(self._save_selected_to_custom_prefixes)
         self.add_to_lib_btn.setVisible(False)
         pfx_layout.addWidget(self.add_to_lib_btn)
@@ -1644,12 +2019,14 @@ class ProtonRunner(QWidget):
         self.trainer_exe_input = QLineEdit()
         self.trainer_exe_input.setObjectName('trainerInput')
         self.trainer_exe_input.setPlaceholderText(t("placeholder_trainer_path"))
+        self.trainer_exe_input.setToolTip(t("tooltip_trainer_input"))
         tr_row.addWidget(self.trainer_exe_input)
 
         self.browse_btn = RoundedButton(t("btn_browse"))
         self.browse_btn.setObjectName("browseBtn")
         self.browse_btn.setFixedSize(81, 37)
         self.browse_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.browse_btn.setToolTip(t("tooltip_browse_trainer"))
         self.browse_btn.clicked.connect(self._browse_trainer_exe)
         tr_row.addWidget(self.browse_btn)
         inspector_layout.addWidget(trainer_field)
@@ -1660,6 +2037,7 @@ class ProtonRunner(QWidget):
         self.launch_btn.setObjectName("launchTrainerBtn")
         self.launch_btn.setFixedHeight(40)
         self.launch_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.launch_btn.setToolTip(t("tooltip_launch_trainer"))
         self.launch_btn.clicked.connect(self._launch_trainer)
         inspector_layout.addWidget(self.launch_btn)
 
@@ -1677,16 +2055,17 @@ class ProtonRunner(QWidget):
         inspector_layout.addWidget(self.qa_lbl)
         inspector_layout.addSpacing(14)
 
-        # Quick Actions 2x2 Grid (Exact Mockup Layout)
+        # Quick Actions (Centralized contextual actions for selected prefix/process)
         qa_grid = QGridLayout()
-        qa_grid.setSpacing(14)
+        qa_grid.setSpacing(12)
         qa_grid.setColumnStretch(0, 1)
         qa_grid.setColumnStretch(1, 1)
 
         self.ce_btn = RoundedButton(t("btn_cheat_engine"))
-        self.ce_btn.setIcon(get_cheatengine_icon(16))
+        self.ce_btn.setIcon(get_cheatengine_icon(18))
         self.ce_btn.setObjectName("quickActionBtn")
         self.ce_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.ce_btn.setToolTip(t("tooltip_cheat_engine"))
         self.ce_btn.clicked.connect(self._run_ce_inspector)
         qa_grid.addWidget(self.ce_btn, 0, 0)
 
@@ -1694,25 +2073,11 @@ class ProtonRunner(QWidget):
         self.wemod_btn.setIcon(get_wemod_icon(16))
         self.wemod_btn.setObjectName("quickActionBtn")
         self.wemod_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.wemod_btn.setToolTip(t("tooltip_wemod_manager"))
         self.wemod_btn.clicked.connect(self._open_wemod_modal)
         qa_grid.addWidget(self.wemod_btn, 0, 1)
 
-        self.open_folder_btn = RoundedButton(t("btn_qa_open_folder"))
-        self.open_folder_btn.setIcon(get_folder_icon(16))
-        self.open_folder_btn.setObjectName("quickActionBtn")
-        self.open_folder_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.open_folder_btn.clicked.connect(self._open_prefix_folder)
-        qa_grid.addWidget(self.open_folder_btn, 1, 0)
-
-        self.open_logs_btn = RoundedButton(t("btn_logs"))
-        self.open_logs_btn.setIcon(get_log_icon(16))
-        self.open_logs_btn.setObjectName("quickActionBtn")
-        self.open_logs_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.open_logs_btn.setToolTip(t("tooltip_logs"))
-        self.open_logs_btn.clicked.connect(self._open_logs_folder)
-        qa_grid.addWidget(self.open_logs_btn, 1, 1)
-
-        for button in (self.ce_btn, self.wemod_btn, self.open_folder_btn, self.open_logs_btn):
+        for button in (self.ce_btn, self.wemod_btn):
             button.setFixedHeight(53)
 
         inspector_layout.addLayout(qa_grid)
@@ -1784,18 +2149,28 @@ class ProtonRunner(QWidget):
         self.setWindowTitle(t('app_title'))
         if hasattr(self, 'search_bar'):
             self.search_bar.setPlaceholderText(t('search_placeholder'))
-        if hasattr(self, 'filter_menu_btn'):
-            self.filter_menu_btn.setToolTip(t('search_filter_tooltip'))
+            self.search_bar.setToolTip(t('tooltip_search_bar'))
+        if hasattr(self, 'tab_proc_btn'):
+            self.tab_proc_btn.setToolTip(t('tooltip_tab_proc'))
+        if hasattr(self, 'tab_pref_btn'):
+            self.tab_pref_btn.setToolTip(t('tooltip_tab_pref'))
+        if hasattr(self, 'proc_empty_title'):
+            self.proc_empty_title.setText(t('empty_proc_title'))
+        if hasattr(self, 'proc_empty_sub'):
+            self.proc_empty_sub.setText(t('empty_proc_subtitle'))
         if hasattr(self, 'proc_tree'):
             self.proc_tree.setHeaderLabels([t('col_pid'), t('col_game_exe'), t('col_env_runner'), t('col_status')])
         if hasattr(self, 'pref_tree'):
             self.pref_tree.setHeaderLabels([t('col_game_prefix'), t('col_source'), t('col_arch'), t('col_wemod')])
         if hasattr(self, 'chip_bar'):
             self.chip_bar.retranslate()
+        if hasattr(self, 'add_prefix_btn'):
+            self.add_prefix_btn.setText(t('btn_add_prefix_toolbar'))
+            self.add_prefix_btn.setToolTip(t('tooltip_add_prefix'))
+        if hasattr(self, 'refresh_btn'):
+            self.refresh_btn.setToolTip(t('tooltip_refresh'))
         if hasattr(self, 'insp_gear'):
             self.insp_gear.setToolTip(t('tooltip_settings'))
-        if hasattr(self, 'back_btn'):
-            self.back_btn.setToolTip(t('tooltip_refresh'))
         if hasattr(self, 'minimize_btn'):
             self.minimize_btn.setToolTip(t('tooltip_minimize'))
         if hasattr(self, 'maximize_btn'):
@@ -1807,42 +2182,37 @@ class ProtonRunner(QWidget):
             self.wine_lbl.setToolTip(t('tooltip_wine_version'))
         if hasattr(self, 'trainer_exe_input'):
             self.trainer_exe_input.setPlaceholderText(t('placeholder_trainer_path'))
+            self.trainer_exe_input.setToolTip(t('tooltip_trainer_input'))
         if hasattr(self, 'browse_btn'):
             self.browse_btn.setText(t('btn_browse'))
+            self.browse_btn.setToolTip(t('tooltip_browse_trainer'))
         if hasattr(self, 'launch_btn'):
             self.launch_btn.setText(t('btn_launch_trainer'))
+            self.launch_btn.setToolTip(t('tooltip_launch_trainer'))
         if hasattr(self, 'qa_lbl'):
             self.qa_lbl.setText(t('label_quick_actions'))
         if hasattr(self, 'ce_btn'):
             self.ce_btn.setText(t('btn_cheat_engine'))
+            self.ce_btn.setToolTip(t('tooltip_cheat_engine'))
         if hasattr(self, 'wemod_btn'):
             self.wemod_btn.setText(t('btn_wemod_manager'))
-        if hasattr(self, 'open_folder_btn'):
-            self.open_folder_btn.setText(t('btn_qa_open_folder'))
-        if hasattr(self, 'open_logs_btn'):
-            self.open_logs_btn.setText(t('btn_logs'))
-            self.open_logs_btn.setToolTip(t('tooltip_logs'))
+            self.wemod_btn.setToolTip(t('tooltip_wemod_manager'))
         if hasattr(self, 'copy_pfx_btn'):
             self.copy_pfx_btn.setText(t('btn_copy'))
+            self.copy_pfx_btn.setToolTip(t('tooltip_copy_pfx'))
         if hasattr(self, 'open_pfx_quick_btn'):
             self.open_pfx_quick_btn.setText(t('btn_open_folder'))
+            self.open_pfx_quick_btn.setToolTip(t('tooltip_open_pfx'))
         if hasattr(self, 'add_to_lib_btn'):
             self.add_to_lib_btn.setText(t('btn_add_to_list'))
+            self.add_to_lib_btn.setToolTip(t('tooltip_add_to_list'))
         self._on_item_selected()
-        self._load_tree()
+        self._load_tree(force=True)
 
     def _create_menu(self):
         menu = QMenu(self)
         menu.setStyleSheet(styles.MENU_STYLESHEET)
         return menu
-
-    def _quick_menu(self):
-        menu = self._create_menu()
-        menu.addAction(t('menu_add_prefix'), self._add_custom_prefix)
-        menu.addAction(t('menu_refresh_list'), self._refresh)
-        menu.addAction(t('menu_open_logs'), self._open_logs_folder)
-        menu.addAction(t('menu_settings'), self._open_settings)
-        menu.exec(self.search_bar.mapToGlobal(self.search_bar.rect().bottomRight()))
 
     # ── Toast status ─────────────────────────────────────────────────
 
@@ -1857,112 +2227,267 @@ class ProtonRunner(QWidget):
 
     def _refresh(self):
         self._show_toast(t("toast_updating"))
-        self._load_tree()
+        self._load_tree(force=True, refresh_prefixes=True)
         self._show_toast(t("toast_list_updated"))
 
     def _auto_refresh(self):
-        # Rebuild the model so processes started or stopped after launch are
-        # actually added/removed from the table.
-        self._load_tree()
+        # Poll running processes & live WeMod states without blocking the UI
+        # thread on protontricks/launcher DB scans every 5 seconds.
+        self._load_tree(force=False, refresh_prefixes=False)
 
-    def _load_tree(self):
-        sel_data = self._selected_data()
-        sel_pfx = sel_data.get('wineprefix') if sel_data else None
+    def _build_wemod_cell_widget(self, pfx: str, game_name: str, wemod_status: str) -> QWidget:
+        holder = QWidget()
+        holder.setStyleSheet("background: transparent;")
+        layout = QHBoxLayout(holder)
+        layout.setContentsMargins(6, 4, 6, 4)
+        layout.setSpacing(0)
+
+        is_running = (wemod_status == 'Rodando')
+        btn = QPushButton(t("wemod_btn_stop_inline") if is_running else t("wemod_btn_start_inline"))
+        btn.setObjectName("wemodInlineStopBtn" if is_running else "wemodInlineStartBtn")
+        btn.setFixedHeight(28)
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn.setToolTip(t("tooltip_wemod_inline_stop") if is_running else t("tooltip_wemod_inline_start"))
+        action = 'stop' if is_running else 'start'
+        btn.clicked.connect(lambda checked=False, p=pfx, n=game_name, a=action, b=btn: self._toggle_wemod_inline(p, n, a, b))
+        layout.addWidget(btn)
+        return holder
+
+    def _toggle_wemod_inline(self, pfx: str, game_name: str, action: str, btn: QPushButton):
+        if not pfx or not os.path.isdir(pfx):
+            self._show_toast(t("toast_pfx_invalid"), is_error=True)
+            return
+        btn.setEnabled(False)
+        btn.setText(t("wemod_inline_stopping") if action == 'stop' else t("wemod_inline_starting"))
+
+        def task():
+            try:
+                if action == 'stop':
+                    wm.stop_wemod(pfx)
+                    self.wemod_action_finished.emit(pfx, True, t("toast_wemod_stopped", name=game_name))
+                else:
+                    pid = wm.launch_wemod(pfx, game_name=game_name)
+                    if pid:
+                        self.wemod_action_finished.emit(pfx, True, t("toast_wemod_started", name=game_name))
+                    else:
+                        self.wemod_action_finished.emit(pfx, False, t("wemod_log_not_started"))
+            except Exception as exc:
+                key = "toast_wemod_stop_failed" if action == 'stop' else "toast_wemod_start_failed"
+                self.wemod_action_finished.emit(pfx, False, t(key, error=exc))
+
+        threading.Thread(target=task, daemon=True).start()
+
+    def _on_wemod_inline_finished(self, pfx: str, ok: bool, msg: str):
+        self._show_toast(msg, is_error=not ok)
+        self._load_tree(force=True)
+
+    def _load_tree(self, force: bool = False, refresh_prefixes: bool = True):
+        # Snapshot selection per tree independently so active process selection never jumps.
+        proc_sel_items = self.proc_tree.selectedItems()
+        prev_proc_data = proc_sel_items[0].data(0, Qt.ItemDataRole.UserRole) if proc_sel_items else None
+        prev_proc_pid = str(prev_proc_data.get('pid', '')) if prev_proc_data else None
+        prev_proc_pfx = _canonical_prefix_path(prev_proc_data.get('wineprefix', '')) if prev_proc_data else ''
+        prev_proc_name = prev_proc_data.get('name', '') if prev_proc_data else ''
+
+        pref_sel_items = self.pref_tree.selectedItems()
+        prev_pref_data = pref_sel_items[0].data(0, Qt.ItemDataRole.UserRole) if pref_sel_items else None
+        prev_pref_source = prev_pref_data.get('source', '') if prev_pref_data else ''
+        prev_pref_pfx = _canonical_prefix_path(prev_pref_data.get('wineprefix', '')) if prev_pref_data else ''
 
         # ── 1. Populate Active Processes ─────────────────────────────
-        self.proc_tree.clear()
         running_entries = get_running_wine_entries()
+        proc_sig = tuple(
+            (
+                str(p.get('pid', '')),
+                p.get('name', ''),
+                p.get('comm', ''),
+                bool(p.get('is_proton')),
+                _canonical_prefix_path(p.get('wineprefix', '')),
+                p.get('wine_bin') or '',
+            )
+            for p in running_entries
+        )
 
-        proc_first_item = None
-        proc_matched_item = None
-        for p in running_entries:
-            pid = str(p.get('pid', ''))
-            name = p.get('name', '')
-            comm = p.get('comm', '')
-            display_name = f"{name} ({comm})" if comm and comm != name else name
-            runner = "Proton" if p.get('is_proton') else "Wine"
-            status = t("status_running")
-            pfx = p.get('wineprefix', '')
+        if force or not self._proc_initialized or proc_sig != self._last_proc_signature:
+            proc_vscroll = self.proc_tree.verticalScrollBar().value()
+            with QSignalBlocker(self.proc_tree):
+                self.proc_tree.clear()
+                proc_first_item = None
+                pid_matched_item = None
+                pfx_name_matched_item = None
+                pfx_matched_item = None
 
-            item = QTreeWidgetItem([pid, display_name, runner, status])
-            item.setData(0, Qt.ItemDataRole.UserRole, p)
-            self.proc_tree.addTopLevelItem(item)
+                for p in running_entries:
+                    pid = str(p.get('pid', ''))
+                    name = p.get('name', '')
+                    comm = p.get('comm', '')
+                    display_name = f"{name} ({comm})" if comm and comm != name else name
+                    runner = "Proton" if p.get('is_proton') else "Wine"
+                    status = t("status_running")
+                    pfx = p.get('wineprefix', '')
+                    canon_pfx = _canonical_prefix_path(pfx)
 
-            if not proc_first_item and pfx:
-                proc_first_item = item
-            if sel_pfx and pfx == sel_pfx:
-                proc_matched_item = item
+                    item = QTreeWidgetItem([pid, display_name, runner, status])
+                    item.setData(0, Qt.ItemDataRole.UserRole, p)
+                    self.proc_tree.addTopLevelItem(item)
+
+                    if not proc_first_item and pfx:
+                        proc_first_item = item
+                    if prev_proc_pid and pid == prev_proc_pid:
+                        pid_matched_item = item
+                    elif prev_proc_pfx and canon_pfx == prev_proc_pfx:
+                        if prev_proc_name and name == prev_proc_name and not pfx_name_matched_item:
+                            pfx_name_matched_item = item
+                        elif not pfx_matched_item:
+                            pfx_matched_item = item
+
+                target_proc = (
+                    pid_matched_item
+                    or pfx_name_matched_item
+                    or pfx_matched_item
+                    or (proc_first_item if (not self._proc_initialized or prev_proc_pid is not None) else None)
+                )
+                if target_proc:
+                    self.proc_tree.setCurrentItem(target_proc)
+                self.proc_tree.verticalScrollBar().setValue(proc_vscroll)
+
+            self._last_proc_signature = proc_sig
+            self._proc_initialized = True
 
         self.tab_proc_btn.setText(t("nav_active_processes", count=len(running_entries)))
 
         # ── 2. Populate Installed Prefixes (Steam, Launchers, Custom) ──
-        self.pref_tree.clear()
-        pref_entries = []
-        seen_pfx = set()
-        hidden = set(load_config().get('hidden_prefixes', []))
+        if refresh_prefixes or not self._pref_initialized:
+            pref_entries = []
+            seen_pfx = set()
+            hidden = set(load_config().get('hidden_prefixes', []))
+            hidden_canon = {_canonical_prefix_path(h) for h in hidden if h}
 
-        def _add_pref(entry):
-            pfx = entry.get('wineprefix', '')
-            key = f"{entry.get('source','')}:{pfx}"
-            if key not in seen_pfx:
-                seen_pfx.add(key)
-                if pfx in hidden and entry.get('source') != 'Não-Steam':
-                    return
-                pref_entries.append(entry)
+            def _add_pref(entry):
+                pfx = entry.get('wineprefix', '')
+                canon = _canonical_prefix_path(pfx)
+                key = canon if canon else f"{entry.get('source','')}:{entry.get('name','')}"
+                if key not in seen_pfx:
+                    seen_pfx.add(key)
+                    if entry.get('source') not in ('Não-Steam', 'Non-Steam') and (pfx in hidden or canon in hidden_canon):
+                        return
+                    pref_entries.append(entry)
 
-        for g in get_steam_games():
-            _add_pref(g)
+            for g in get_steam_games():
+                _add_pref(g)
 
-        for l in get_launcher_prefixes():
-            _add_pref(l)
+            for l in get_launcher_prefixes():
+                _add_pref(l)
 
-        for c in get_custom_prefixes():
-            pfx = c.get('wineprefix', '')
-            if pfx:
-                _add_pref({
-                    'name': c.get('name', pfx),
-                    'appid': None,
-                    'wineprefix': pfx,
-                    'source': 'Personalizado',
-                    'exe': '',
-                    'is_proton': False,
-                })
+            for c in get_custom_prefixes():
+                pfx = c.get('wineprefix', '')
+                if pfx:
+                    _add_pref({
+                        'name': c.get('name', pfx),
+                        'appid': None,
+                        'wineprefix': pfx,
+                        'source': c.get('source', 'Custom'),
+                        'exe': '',
+                        'is_proton': False,
+                    })
+            self._cached_pref_entries = pref_entries
+            self._known_prefixes_canon = {
+                _canonical_prefix_path(e.get('wineprefix', ''))
+                for e in pref_entries if e.get('wineprefix')
+            }
+        else:
+            pref_entries = self._cached_pref_entries
 
-        pref_first_item = None
-        pref_matched_item = None
-
+        running_wemod = wm.get_running_wemod_prefixes()
+        pref_rows = []
         for e in pref_entries:
             pfx = e.get('wineprefix', '')
-            name = e.get('name', '')
-            source = e.get('source', '')
-            arch = "win64"
+            if not pfx or not wm.is_wemod_installed(pfx):
+                wemod_status = 'Nao instalado'
+            else:
+                norm_p = pfx.rstrip('/')
+                canon_p = _canonical_prefix_path(pfx)
+                wemod_status = 'Rodando' if (norm_p in running_wemod or canon_p in running_wemod) else 'Instalado'
+            pref_rows.append((e, wemod_status))
 
-            has_wemod = bool(pfx and wm.is_wemod_installed(pfx))
-            wemod_label = t("status_installed") if has_wemod else t("status_not_installed")
+        pref_sig = tuple(
+            (
+                e.get('name', ''),
+                e.get('source', ''),
+                _canonical_prefix_path(e.get('wineprefix', '')),
+                ws,
+            )
+            for e, ws in pref_rows
+        )
 
-            display_source = source
-            if source in ('Personalizado', 'Custom'):
-                display_source = t('source_custom')
-            elif source in ('Não-Steam', 'Non-Steam'):
-                display_source = t('source_non_steam')
+        if force or not self._pref_initialized or pref_sig != self._last_pref_signature:
+            pref_vscroll = self.pref_tree.verticalScrollBar().value()
+            with QSignalBlocker(self.pref_tree):
+                self.pref_tree.clear()
+                pref_first_item = None
+                pref_exact_match = None
+                pref_pfx_match = None
 
-            item = QTreeWidgetItem([name, display_source, arch, wemod_label])
-            item.setData(0, Qt.ItemDataRole.UserRole, e)
-            self.pref_tree.addTopLevelItem(item)
+                for e, wemod_status in pref_rows:
+                    pfx = e.get('wineprefix', '')
+                    canon_pfx = _canonical_prefix_path(pfx)
+                    name = e.get('name', '')
+                    source = e.get('source', '')
+                    arch = "win64"
 
-            if not pref_first_item and pfx:
-                pref_first_item = item
-            if sel_pfx and pfx == sel_pfx:
-                pref_matched_item = item
+                    display_source = source
+                    if source in ('Personalizado', 'Custom'):
+                        display_source = t('source_custom')
+                    elif source in ('Não-Steam', 'Non-Steam'):
+                        display_source = t('source_non_steam')
+                    elif source == 'Default Wine':
+                        display_source = t('source_default_wine')
+
+                    wemod_label = t("status_not_installed") if wemod_status == 'Nao instalado' else ""
+                    item = QTreeWidgetItem([name, display_source, arch, wemod_label])
+                    item.setData(0, Qt.ItemDataRole.UserRole, e)
+                    self.pref_tree.addTopLevelItem(item)
+
+                    if wemod_status in ('Instalado', 'Rodando') and pfx:
+                        self.pref_tree.setItemWidget(
+                            item, 3, self._build_wemod_cell_widget(pfx, name, wemod_status)
+                        )
+                    else:
+                        item.setToolTip(3, t("tooltip_wemod_not_installed"))
+
+                    if not pref_first_item and pfx:
+                        pref_first_item = item
+                    if prev_pref_pfx and canon_pfx == prev_pref_pfx:
+                        if source == prev_pref_source:
+                            pref_exact_match = item
+                        elif not pref_pfx_match:
+                            pref_pfx_match = item
+
+                target_pref = (
+                    pref_exact_match
+                    or pref_pfx_match
+                    or (pref_first_item if not self._pref_initialized else None)
+                )
+                if target_pref:
+                    self.pref_tree.setCurrentItem(target_pref)
+                self.pref_tree.verticalScrollBar().setValue(pref_vscroll)
+
+            self._last_pref_signature = pref_sig
+            self._pref_initialized = True
 
         self.tab_pref_btn.setText(t("nav_installed_prefixes", count=self.pref_tree.topLevelItemCount()))
 
         self._apply_filters()
 
-        curr_tree = self.proc_tree if self.view_stack.currentIndex() == 0 else self.pref_tree
-        target = (proc_matched_item or proc_first_item) if self.view_stack.currentIndex() == 0 else (pref_matched_item or pref_first_item)
-        if target:
-            curr_tree.setCurrentItem(target)
+        curr_data = self._selected_data()
+        curr_key = (
+            str(curr_data.get('pid', '')) if curr_data else None,
+            _canonical_prefix_path(curr_data.get('wineprefix', '')) if curr_data else '',
+            curr_data.get('wine_bin') if curr_data else None,
+            self.view_stack.currentIndex(),
+        )
+        if force or curr_key != self._last_inspector_key:
+            self._on_item_selected()
 
     # ── Filtering ────────────────────────────────────────────────────
 
@@ -1971,6 +2496,7 @@ class ProtonRunner(QWidget):
         active_chip = self.chip_bar.get_active_filter()
 
         # Filters for Active Processes Tree
+        visible_procs = 0
         for i in range(self.proc_tree.topLevelItemCount()):
             item = self.proc_tree.topLevelItem(i)
             data = item.data(0, Qt.ItemDataRole.UserRole) or {}
@@ -1983,6 +2509,13 @@ class ProtonRunner(QWidget):
             if search_query:
                 match = (search_query in pid or search_query in name or search_query in exe or search_query in pfx)
             item.setHidden(not match)
+            if match:
+                visible_procs += 1
+
+        if hasattr(self, 'proc_empty_frame'):
+            has_visible = (visible_procs > 0)
+            self.proc_tree.setVisible(has_visible)
+            self.proc_empty_frame.setVisible(not has_visible)
 
         # Filters for Installed Prefixes Tree
         for i in range(self.pref_tree.topLevelItemCount()):
@@ -1995,15 +2528,21 @@ class ProtonRunner(QWidget):
 
             chip_match = True
             if active_chip == 'STEAM':
-                chip_match = ('steam' in source)
+                chip_match = (source == 'steam')
+            elif active_chip == 'HYDRA':
+                chip_match = ('hydra' in source)
             elif active_chip == 'HEROIC':
                 chip_match = ('heroic' in source)
             elif active_chip == 'LUTRIS':
                 chip_match = ('lutris' in source)
             elif active_chip == 'BOTTLES':
                 chip_match = ('bottles' in source)
+            elif active_chip == 'NON_STEAM':
+                chip_match = (source in ('non-steam', 'não-steam'))
+            elif active_chip == 'DEFAULT_WINE':
+                chip_match = (source == 'default wine')
             elif active_chip == 'CUSTOM':
-                chip_match = ('custom' in source or 'personalizado' in source or 'não-steam' in source)
+                chip_match = (source in ('custom', 'personalizado'))
 
             search_match = True
             if search_query:
@@ -2027,6 +2566,12 @@ class ProtonRunner(QWidget):
 
     def _on_item_selected(self):
         data = self._selected_data()
+        self._last_inspector_key = (
+            str(data.get('pid', '')) if data else None,
+            _canonical_prefix_path(data.get('wineprefix', '')) if data else '',
+            data.get('wine_bin') if data else None,
+            self.view_stack.currentIndex() if hasattr(self, 'view_stack') else 0,
+        )
         if not data:
             self.banner_widget.set_game(t("banner_select_game"), "", "")
             self._current_wine_bin = None
@@ -2045,17 +2590,24 @@ class ProtonRunner(QWidget):
         source = data.get('source', '')
         appid = data.get('appid', '')
         pfx = data.get('wineprefix', '')
+        canon_pfx = _canonical_prefix_path(pfx)
+        banner_source = source
+        if data.get('pid') and (not source or source.startswith('PID ')):
+            banner_source = "Proton" if data.get('is_proton') else "Wine"
 
-        self.banner_widget.set_game(name, source, appid)
+        self.banner_widget.set_game(name, banner_source, appid, pid=data.get('pid'))
 
         if hasattr(self, 'pfx_path_label'):
             self.pfx_path_label.setText(pfx if pfx else t("pfx_none_associated"))
 
         if hasattr(self, 'add_to_lib_btn'):
             is_proc = bool(data.get('pid'))
-            cfg = load_config()
-            saved_pfxs = {c.get('wineprefix') for c in cfg.get('custom_prefixes', [])}
-            can_save = is_proc and pfx and (pfx not in saved_pfxs)
+            if is_proc and canon_pfx:
+                cfg = load_config()
+                saved_pfxs = {_canonical_prefix_path(c.get('wineprefix', '')) for c in cfg.get('custom_prefixes', [])}
+                can_save = (canon_pfx not in saved_pfxs) and (canon_pfx not in self._known_prefixes_canon)
+            else:
+                can_save = False
             self.add_to_lib_btn.setVisible(bool(can_save))
 
         live_bin = (data.get('wine_bin') or '').strip() if isinstance(data.get('wine_bin'), str) else data.get('wine_bin')
@@ -2227,6 +2779,7 @@ class ProtonRunner(QWidget):
         name = data.get('name', 'Jogo')
         dlg = WeModDialog(pfx, name, self)
         dlg.exec()
+        self._load_tree(force=True)
 
     def _copy_prefix_path(self):
         data = self._selected_data()
@@ -2257,13 +2810,17 @@ class ProtonRunner(QWidget):
 
     def _open_settings(self):
         old_lang = i18n.get_language()
-        dlg = SettingsDialog(self.config, save_config, self)
+        self.config = load_config()
+        dlg = SettingsDialog(
+            self.config, save_config, self,
+            delete_prefix_callback=self._remove_prefix,
+        )
         if dlg.exec():
             new_lang = self.config.get('language', 'en')
             if new_lang != old_lang:
                 i18n.set_language(new_lang)
                 self.retranslate_ui()
-            self._refresh()
+        self._refresh()
 
     # ── Context Menu (Right Click) ───────────────────────────────────
 
@@ -2283,11 +2840,12 @@ class ProtonRunner(QWidget):
             return
         cfg = load_config()
         custom = cfg.setdefault('custom_prefixes', [])
+        canon_pfx = _canonical_prefix_path(pfx)
         for c in custom:
-            if c.get('wineprefix') == pfx:
+            if _canonical_prefix_path(c.get('wineprefix', '')) == canon_pfx:
                 QMessageBox.information(self, 'Info', t('msg_already_in_list'))
                 return
-        custom.append({'name': name.strip(), 'wineprefix': pfx})
+        custom.append({'name': name.strip(), 'wineprefix': canon_pfx or pfx, 'source': 'Custom'})
         save_config(cfg)
         self._refresh()
         self._show_toast(t('toast_prefix_added', name=name.strip()))
@@ -2460,9 +3018,31 @@ class ProtonRunner(QWidget):
         self._show_toast(t('toast_pfx_hidden'))
 
     def _remove_prefix(self, pfx, is_custom=False):
-        if not os.path.isdir(pfx):
-            QMessageBox.warning(self, t('msg_confirm_title'), t('msg_pfx_not_exist'))
-            return
+        canon_pfx = _canonical_prefix_path(pfx)
+        if not pfx or not os.path.isdir(pfx):
+            reply = QMessageBox.question(
+                self, t('msg_confirm_title'),
+                t('msg_confirm_remove_stale_pfx', pfx=pfx),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return False
+            cfg = load_config()
+            if 'custom_prefixes' in cfg:
+                cfg['custom_prefixes'] = [
+                    c for c in cfg['custom_prefixes']
+                    if c.get('wineprefix') != pfx and _canonical_prefix_path(c.get('wineprefix', '')) != canon_pfx
+                ]
+            if 'hidden_prefixes' in cfg:
+                cfg['hidden_prefixes'] = [
+                    h for h in cfg['hidden_prefixes']
+                    if h != pfx and _canonical_prefix_path(h) != canon_pfx
+                ]
+            save_config(cfg)
+            self.config = cfg
+            self._refresh()
+            self._show_toast(t('toast_pfx_deleted'))
+            return True
 
         delete_target = _resolve_prefix_root(pfx)
 
@@ -2475,7 +3055,9 @@ class ProtonRunner(QWidget):
             os.path.abspath(os.path.join(home, 'Games')),
             os.path.abspath(os.path.join(home, 'wineprefixes')),
             os.path.abspath(os.path.join(home, '.config/hydralauncher/wine-prefixes')),
+            os.path.abspath(os.path.join(home, '.config/hydralauncher-native/wine-prefixes')),
             os.path.abspath(os.path.join(home, '.var/app/io.github.hydralauncher.hydra/config/hydralauncher/wine-prefixes')),
+            os.path.abspath(os.path.join(home, '.var/app/io.github.hydralauncher.hydra/config/hydralauncher-native/wine-prefixes')),
             os.path.abspath(os.path.join(home, '.PlayOnLinux/wineprefix')),
             os.path.abspath(os.path.join(home, 'PortProton/prefixes')),
             os.path.abspath(os.path.join(home, '.local/share/bottles/bottles')),
@@ -2486,7 +3068,7 @@ class ProtonRunner(QWidget):
                 self, t('msg_security_error_title'),
                 t('msg_security_error_body', target=delete_target)
             )
-            return
+            return False
 
         reply = QMessageBox.question(
             self, t('msg_confirm_title'),
@@ -2494,18 +3076,28 @@ class ProtonRunner(QWidget):
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply != QMessageBox.StandardButton.Yes:
-            return
+            return False
         self._kill_prefix_processes(pfx)
         result = subprocess.run(['rm', '-rf', delete_target], capture_output=True, text=True)
         if result.returncode != 0:
             QMessageBox.critical(self, t('msg_confirm_title'), t('msg_error_delete_pfx', error=result.stderr))
-            return
+            return False
         cfg = load_config()
         if 'custom_prefixes' in cfg:
-            cfg['custom_prefixes'] = [c for c in cfg['custom_prefixes'] if c.get('wineprefix') != pfx]
-            save_config(cfg)
+            cfg['custom_prefixes'] = [
+                c for c in cfg['custom_prefixes']
+                if c.get('wineprefix') != pfx and _canonical_prefix_path(c.get('wineprefix', '')) != canon_pfx
+            ]
+        if 'hidden_prefixes' in cfg:
+            cfg['hidden_prefixes'] = [
+                h for h in cfg['hidden_prefixes']
+                if h != pfx and _canonical_prefix_path(h) != canon_pfx
+            ]
+        save_config(cfg)
+        self.config = cfg
         self._refresh()
         self._show_toast(t('toast_pfx_deleted'))
+        return True
 
     def _wemod_built_log_window(self, title: str):
         win = QDialog(self)

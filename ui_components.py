@@ -63,24 +63,8 @@ def get_shark_icon(size: int = 24) -> QIcon:
 
 
 def get_cheatengine_icon(size: int = 18) -> QIcon:
-    """Draws crisp gear / dial icon for Cheat Engine."""
-    pix = QPixmap(size, size)
-    pix.fill(Qt.GlobalColor.transparent)
-    p = QPainter(pix)
-    p.setRenderHint(QPainter.RenderHint.Antialiasing)
-
-    pen = QPen(QColor("#dddddf"), 1.8)
-    p.setPen(pen)
-    center = size / 2.0
-    p.drawArc(QRectF(size*.2, size*.2, size*.65, size*.65), 50*16, 265*16)
-    p.drawLine(QPointF(size*.48, size*.12), QPointF(size*.48, size*.25))
-    p.drawLine(QPointF(size*.15, size*.35), QPointF(size*.29, size*.42))
-    p.drawLine(QPointF(size*.1, size*.63), QPointF(size*.26, size*.63))
-    p.drawLine(QPointF(size*.38, size*.82), QPointF(size*.34, size*.97))
-    p.drawLine(QPointF(size*.44, size*.5), QPointF(size*.94, size*.5))
-    p.drawLine(QPointF(size*.44, size*.7), QPointF(size*.8, size*.7))
-    p.end()
-    return QIcon(pix)
+    """Scalable classic Cheat Engine icon (blue magnifying emblem + CE monogram)."""
+    return QIcon(str(Path(__file__).resolve().parent / "images" / "cheat-engine.svg"))
 
 
 def get_wemod_icon(size: int = 18) -> QIcon:
@@ -319,7 +303,7 @@ class RoundedButton(QPushButton):
             text_color = QColor("#6b6e80")
         painter.setPen(text_color)
         font = self.font()
-        font.setPixelSize(15)
+        font.setPixelSize(13 if kind == "chipBtn" else 15)
         font.setBold(False)
         painter.setFont(font)
 
@@ -370,10 +354,12 @@ class StatusBadgeDelegate(QStyledItemDelegate):
         painter.drawRoundedRect(full.adjusted(0, 0, 0, -1), 6, 6)
         painter.restore()
         if index.column() == 3:  # Status column
+            status_text = str(index.data(Qt.ItemDataRole.DisplayRole) or "")
+            if not status_text:
+                return
             painter.save()
             painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-            status_text = str(index.data(Qt.ItemDataRole.DisplayRole) or "")
             rect = option.rect
 
             font = painter.font()
@@ -442,23 +428,27 @@ class FilterChipBar(QWidget):
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 4, 0, 8)
-        layout.setSpacing(8)
+        layout.setSpacing(6)
 
         chips = [
             ("ALL", t("chip_all")),
             ("STEAM", t("chip_steam")),
+            ("HYDRA", t("chip_hydra")),
             ("HEROIC", t("chip_heroic")),
             ("LUTRIS", t("chip_lutris")),
             ("BOTTLES", t("chip_bottles")),
+            ("NON_STEAM", t("chip_non_steam")),
+            ("DEFAULT_WINE", t("chip_default_wine")),
             ("CUSTOM", t("chip_custom")),
         ]
 
         for code, label in chips:
             btn = RoundedButton(label)
             btn.setObjectName("chipBtn")
-            btn.setFixedHeight(29)
+            btn.setFixedHeight(28)
             btn.setProperty("filterCode", code)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setToolTip(t("tooltip_chip_all") if code == "ALL" else t("tooltip_chip_source", source=label))
             btn.clicked.connect(lambda checked, c=code: self.set_active_filter(c))
             layout.addWidget(btn)
             self._buttons[code] = btn
@@ -467,10 +457,24 @@ class FilterChipBar(QWidget):
         self._update_button_states()
 
     def retranslate(self):
-        if "ALL" in self._buttons:
-            self._buttons["ALL"].setText(t("chip_all"))
-        if "CUSTOM" in self._buttons:
-            self._buttons["CUSTOM"].setText(t("chip_custom"))
+        mapping = {
+            "ALL": "chip_all",
+            "STEAM": "chip_steam",
+            "HYDRA": "chip_hydra",
+            "HEROIC": "chip_heroic",
+            "LUTRIS": "chip_lutris",
+            "BOTTLES": "chip_bottles",
+            "NON_STEAM": "chip_non_steam",
+            "DEFAULT_WINE": "chip_default_wine",
+            "CUSTOM": "chip_custom",
+        }
+        for code, key in mapping.items():
+            if code in self._buttons:
+                label = t(key)
+                self._buttons[code].setText(label)
+                self._buttons[code].setToolTip(
+                    t("tooltip_chip_all") if code == "ALL" else t("tooltip_chip_source", source=label)
+                )
 
     def set_active_filter(self, code: str):
         if self._active_filter != code:
@@ -502,16 +506,18 @@ class GameBannerWidget(QWidget):
         self._game_title = t("banner_select_game")
         self._source = ""
         self._appid = ""
+        self._pid = None
         self._pixmap = None
         self._loading_appid = None
 
         self.banner_loaded.connect(self._on_banner_downloaded)
         Path(BANNER_CACHE_DIR).mkdir(parents=True, exist_ok=True)
 
-    def set_game(self, title: str, source: str = "", appid: str = ""):
+    def set_game(self, title: str, source: str = "", appid: str = "", pid=None):
         self._game_title = title or t("banner_unknown_game")
         self._source = source or ""
         self._appid = str(appid).strip() if appid else ""
+        self._pid = str(pid).strip() if pid else None
         self._pixmap = None
 
         if self._appid and self._appid.isdigit():
@@ -583,6 +589,35 @@ class GameBannerWidget(QWidget):
             painter.setPen(QPen(QColor(99, 102, 241, 40), 1))
             painter.drawRoundedRect(rect.adjusted(0.5, 0.5, -0.5, -0.5), 10, 10)
 
+        # Top pills: Source (left) & live PID (right)
+        if self._source or self._pid:
+            pill_font = painter.font()
+            pill_font.setPointSize(9)
+            pill_font.setBold(True)
+            painter.setFont(pill_font)
+            pfm = painter.fontMetrics()
+
+            if self._source:
+                src_text = self._source
+                sw = min(pfm.horizontalAdvance(src_text) + 16, self.width() - 120)
+                srect = QRectF(12, 10, max(sw, 44), 20)
+                painter.setBrush(QBrush(QColor(22, 23, 33, 195)))
+                painter.setPen(QPen(QColor(129, 140, 248, 120), 1))
+                painter.drawRoundedRect(srect, 10, 10)
+                painter.setPen(QColor("#c7d2fe"))
+                el_src = pfm.elidedText(src_text, Qt.TextElideMode.ElideRight, int(srect.width() - 12))
+                painter.drawText(srect.toRect(), Qt.AlignmentFlag.AlignCenter, el_src)
+
+            if self._pid:
+                pid_text = f"PID {self._pid}"
+                pw = pfm.horizontalAdvance(pid_text) + 16
+                prect = QRectF(self.width() - pw - 12, 10, pw, 20)
+                painter.setBrush(QBrush(QColor(16, 42, 34, 210)))
+                painter.setPen(QPen(QColor(52, 211, 153, 140), 1))
+                painter.drawRoundedRect(prect, 10, 10)
+                painter.setPen(QColor("#6ee7b7"))
+                painter.drawText(prect.toRect(), Qt.AlignmentFlag.AlignCenter, pid_text)
+
         # Title text positioned at bottom left
         painter.setPen(QColor("#ffffff"))
         font = painter.font()
@@ -614,6 +649,7 @@ class WeModDialog(QDialog):
         self._operation_running = False
 
         self.setWindowTitle(t("wemod_dialog_title", name=game_name))
+        self.setObjectName("wemodDialog")
         self.setMinimumSize(680, 520)
         self.setStyleSheet(styles.GLOBAL_STYLESHEET)
 
@@ -651,10 +687,12 @@ class WeModDialog(QDialog):
 
         dl_row = QHBoxLayout()
         self.dl_btn = QPushButton(t("wemod_btn_download"))
+        self.dl_btn.setToolTip(t("tooltip_wemod_download"))
         self.dl_btn.clicked.connect(self._download_wemod)
         dl_row.addWidget(self.dl_btn)
 
         self.clear_cache_btn = QPushButton(t("wemod_btn_clear_cache"))
+        self.clear_cache_btn.setToolTip(t("tooltip_wemod_clear_cache"))
         self.clear_cache_btn.clicked.connect(self._clear_cache)
         dl_row.addWidget(self.clear_cache_btn)
 
@@ -664,20 +702,15 @@ class WeModDialog(QDialog):
         action_row = QHBoxLayout()
         self.install_btn = QPushButton(t("wemod_btn_install"))
         self.install_btn.setStyleSheet(f"background-color: {styles.ACCENT_COLOR}; color: #ffffff; font-weight: bold;")
+        self.install_btn.setToolTip(t("tooltip_wemod_install"))
         self.install_btn.clicked.connect(self._install_built)
         action_row.addWidget(self.install_btn)
 
-        self.start_btn = QPushButton(t("wemod_btn_start"))
-        self.start_btn.clicked.connect(self._start_wemod)
-        action_row.addWidget(self.start_btn)
-
-        self.stop_btn = QPushButton(t("wemod_btn_stop"))
-        self.stop_btn.clicked.connect(self._stop_wemod)
-        action_row.addWidget(self.stop_btn)
-
         self.uninstall_btn = QPushButton(t("wemod_btn_uninstall"))
+        self.uninstall_btn.setToolTip(t("tooltip_wemod_uninstall"))
         self.uninstall_btn.clicked.connect(self._uninstall_wemod)
         action_row.addWidget(self.uninstall_btn)
+        action_row.addStretch()
 
         layout.addLayout(action_row)
 
@@ -714,8 +747,6 @@ class WeModDialog(QDialog):
             self.dl_btn,
             self.clear_cache_btn,
             self.install_btn,
-            self.start_btn,
-            self.stop_btn,
             self.uninstall_btn,
         ):
             button.setEnabled(not running)
@@ -752,14 +783,10 @@ class WeModDialog(QDialog):
             st = t("wemod_status_prefix_missing")
             color = "#ef4444"
             self.install_btn.setEnabled(False)
-            self.start_btn.setEnabled(False)
-            self.stop_btn.setEnabled(False)
             self.uninstall_btn.setEnabled(False)
         else:
             s = wm.get_status(self.prefix)
             self.install_btn.setEnabled(downloaded and s != "Rodando")
-            self.start_btn.setEnabled(downloaded and s == "Instalado")
-            self.stop_btn.setEnabled(s == "Rodando")
             self.uninstall_btn.setEnabled(s in ("Instalado", "Rodando"))
             self.clear_cache_btn.setEnabled(has_cache and s != "Rodando")
 
@@ -848,49 +875,6 @@ class WeModDialog(QDialog):
 
         threading.Thread(target=task, daemon=True).start()
 
-    def _start_wemod(self):
-        if not self._start_operation():
-            return
-        self.log(t("wemod_log_starting"))
-
-        def _on_error(log_path, _summary):
-            log_name = os.path.basename(log_path)
-            self.log_message.emit(t("wemod_log_crash", name=log_name))
-
-        def task():
-            try:
-                pid = wm.launch_wemod(
-                    self.prefix,
-                    game_name=self.game_name,
-                    on_error_callback=_on_error
-                )
-                if pid:
-                    self.log_message.emit(t("wemod_log_started_pid", pid=pid))
-                else:
-                    self.log_message.emit(t("wemod_log_not_started"))
-            except Exception as e:
-                self.log_message.emit(t("wemod_log_start_error", error=e))
-            finally:
-                self.operation_finished.emit()
-
-        threading.Thread(target=task, daemon=True).start()
-
-    def _stop_wemod(self):
-        if not self._start_operation():
-            return
-        self.log(t("wemod_log_stopping"))
-
-        def task():
-            try:
-                wm.stop_wemod(self.prefix)
-                self.log_message.emit(t("wemod_log_stopped"))
-            except Exception as e:
-                self.log_message.emit(t("wemod_log_stop_error", error=e))
-            finally:
-                self.operation_finished.emit()
-
-        threading.Thread(target=task, daemon=True).start()
-
     def _uninstall_wemod(self):
         ans = QMessageBox.question(
             self,
@@ -920,15 +904,16 @@ class WeModDialog(QDialog):
 class SettingsDialog(QDialog):
     """Settings dialog for Language, Trainers Folder, Cheat Engine Path, and Hidden Prefixes."""
 
-    def __init__(self, config: dict, save_callback, parent=None):
+    def __init__(self, config: dict, save_callback, parent=None, delete_prefix_callback=None):
         super().__init__(parent)
         self.config = config
         self.save_callback = save_callback
+        self.delete_prefix_callback = delete_prefix_callback
         self._original_lang = i18n.get_language()
 
         self.setWindowTitle(t("settings_window_title"))
         self.setObjectName('settingsDialog')
-        self.setMinimumSize(580, 540)
+        self.setMinimumSize(640, 580)
         self.setStyleSheet(styles.GLOBAL_STYLESHEET)
 
         self._init_ui()
@@ -948,6 +933,8 @@ class SettingsDialog(QDialog):
         lang_row = QHBoxLayout()
         self.lang_combo = QComboBox()
         self.lang_combo.setObjectName('languageCombo')
+        self.lang_combo.setMinimumSize(170, 34)
+        self.lang_combo.setToolTip(t("tooltip_settings_lang"))
         self.lang_combo.addItem("English", "en")
         self.lang_combo.addItem("Português", "pt")
         self.lang_combo.addItem("Español", "es")
@@ -967,6 +954,7 @@ class SettingsDialog(QDialog):
         self.trainers_input = QLineEdit()
         self.trainers_input.setText(self.config.get("trainers_folder", ""))
         self.trainers_input.setPlaceholderText(t("settings_trainers_placeholder"))
+        self.trainers_input.setToolTip(t("tooltip_settings_trainers_input"))
         tr_row.addWidget(self.trainers_input)
 
         self.browse_tr = QPushButton(t("settings_browse"))
@@ -982,6 +970,7 @@ class SettingsDialog(QDialog):
         self.ce_input = QLineEdit()
         self.ce_input.setText(self.config.get("ce_path", ""))
         self.ce_input.setPlaceholderText(t("settings_ce_placeholder"))
+        self.ce_input.setToolTip(t("tooltip_settings_ce_input"))
         ce_row.addWidget(self.ce_input)
 
         self.browse_ce = QPushButton(t("settings_browse"))
@@ -994,13 +983,24 @@ class SettingsDialog(QDialog):
         self.hidden_label = QLabel(t("settings_hidden_prefixes"))
         layout.addWidget(self.hidden_label)
         self.hidden_list = QListWidget()
+        self.hidden_list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
+        self.hidden_list.setToolTip(t("tooltip_settings_hidden_list"))
         for pfx in self.config.get("hidden_prefixes", []):
             self.hidden_list.addItem(pfx)
         layout.addWidget(self.hidden_list, stretch=1)
 
+        hidden_actions_row = QHBoxLayout()
         self.unhide_btn = QPushButton(t("settings_unhide_btn"))
+        self.unhide_btn.setToolTip(t("tooltip_settings_unhide"))
         self.unhide_btn.clicked.connect(self._unhide_selected)
-        layout.addWidget(self.unhide_btn)
+        hidden_actions_row.addWidget(self.unhide_btn)
+
+        self.delete_hidden_btn = QPushButton(t("settings_delete_hidden_btn"))
+        self.delete_hidden_btn.setObjectName("deleteHiddenBtn")
+        self.delete_hidden_btn.setToolTip(t("settings_delete_hidden_tooltip"))
+        self.delete_hidden_btn.clicked.connect(self._delete_hidden_selected)
+        hidden_actions_row.addWidget(self.delete_hidden_btn)
+        layout.addLayout(hidden_actions_row)
 
         self.logs_label = QLabel(t("settings_logs_folder"))
         layout.addWidget(self.logs_label)
@@ -1040,16 +1040,23 @@ class SettingsDialog(QDialog):
         self.setWindowTitle(t("settings_window_title"))
         self.title_lbl.setText(t("settings_header"))
         self.lang_label.setText(t("settings_language_label"))
+        self.lang_combo.setToolTip(t("tooltip_settings_lang"))
         self.trainers_label.setText(t("settings_trainers_folder"))
         self.trainers_input.setPlaceholderText(t("settings_trainers_placeholder"))
+        self.trainers_input.setToolTip(t("tooltip_settings_trainers_input"))
         self.browse_tr.setText(t("settings_browse"))
         self.browse_tr.setToolTip(t("settings_browse_trainers_tooltip"))
         self.ce_label.setText(t("settings_ce_path"))
         self.ce_input.setPlaceholderText(t("settings_ce_placeholder"))
+        self.ce_input.setToolTip(t("tooltip_settings_ce_input"))
         self.browse_ce.setText(t("settings_browse"))
         self.browse_ce.setToolTip(t("settings_browse_ce_tooltip"))
         self.hidden_label.setText(t("settings_hidden_prefixes"))
+        self.hidden_list.setToolTip(t("tooltip_settings_hidden_list"))
         self.unhide_btn.setText(t("settings_unhide_btn"))
+        self.unhide_btn.setToolTip(t("tooltip_settings_unhide"))
+        self.delete_hidden_btn.setText(t("settings_delete_hidden_btn"))
+        self.delete_hidden_btn.setToolTip(t("settings_delete_hidden_tooltip"))
         self.logs_label.setText(t("settings_logs_folder"))
         self.open_logs_btn.setText(t("settings_open_logs_btn"))
         self.open_logs_btn.setToolTip(t("settings_open_logs_tooltip"))
@@ -1078,6 +1085,37 @@ class SettingsDialog(QDialog):
             row = self.hidden_list.row(item)
             self.hidden_list.takeItem(row)
 
+    def _delete_hidden_selected(self):
+        sel = self.hidden_list.selectedItems()
+        if not sel:
+            return
+        for item in list(sel):
+            pfx = item.text()
+            deleted = False
+            if self.delete_prefix_callback:
+                deleted = bool(self.delete_prefix_callback(pfx))
+                if deleted and self.parent() is not None and hasattr(self.parent(), "config"):
+                    self.config.update(self.parent().config)
+            else:
+                ans = QMessageBox.question(
+                    self, t("msg_confirm_title"),
+                    t("msg_confirm_delete_pfx", target=pfx),
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                )
+                if ans == QMessageBox.StandardButton.Yes:
+                    import shutil
+                    if os.path.isdir(pfx):
+                        shutil.rmtree(pfx, ignore_errors=True)
+                    deleted = True
+                    if "hidden_prefixes" in self.config:
+                        self.config["hidden_prefixes"] = [
+                            h for h in self.config["hidden_prefixes"] if h != pfx
+                        ]
+                        self.save_callback(self.config)
+            if deleted:
+                row = self.hidden_list.row(item)
+                self.hidden_list.takeItem(row)
+
     def _save(self):
         selected_lang = self.lang_combo.currentData() or i18n.DEFAULT_LANGUAGE
         self.config["language"] = selected_lang
@@ -1096,4 +1134,3 @@ class SettingsDialog(QDialog):
     def reject(self):
         i18n.set_language(self._original_lang)
         super().reject()
-        self.accept()
